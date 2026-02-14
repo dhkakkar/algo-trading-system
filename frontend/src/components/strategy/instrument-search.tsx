@@ -24,7 +24,7 @@ export function InstrumentSearch({ value, onChange }: InstrumentSearchProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Close dropdown on outside click
   useEffect(() => {
