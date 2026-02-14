@@ -9,6 +9,7 @@ import {
   Loader2,
   Save,
   Trash2,
+  FlaskConical,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { FileUpload } from "@/components/strategy/file-upload";
 import { useStrategyStore } from "@/stores/strategy-store";
+import { useBacktestStore } from "@/stores/backtest-store";
 
 const TIMEFRAME_OPTIONS = [
   { value: "1m", label: "1 Minute" },
@@ -51,10 +53,17 @@ export default function EditStrategyPage() {
   const [instrumentsText, setInstrumentsText] = useState("");
   const [sourceTab, setSourceTab] = useState<SourceTab>("editor");
 
+  const { createBacktest } = useBacktestStore();
+
   const [isSaving, setIsSaving] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showBacktestPanel, setShowBacktestPanel] = useState(false);
+  const [isRunningBacktest, setIsRunningBacktest] = useState(false);
+  const [btStartDate, setBtStartDate] = useState("2025-01-01");
+  const [btEndDate, setBtEndDate] = useState("2025-12-31");
+  const [btCapital, setBtCapital] = useState("100000");
   const [validationResult, setValidationResult] = useState<{
     valid: boolean;
     error: string | null;
@@ -175,6 +184,50 @@ export default function EditStrategyPage() {
     }
   };
 
+  const handleRunBacktest = async () => {
+    setIsRunningBacktest(true);
+    setSaveError(null);
+
+    try {
+      // Save strategy first
+      if (name.trim() && code.trim()) {
+        const instruments = instrumentsText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        await updateStrategy(id, {
+          name: name.trim(),
+          description: description.trim() || undefined,
+          code,
+          timeframe,
+          instruments: instruments.length > 0 ? instruments : [],
+        });
+      }
+
+      const instruments = instrumentsText
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const backtestId = await createBacktest({
+        strategy_id: id,
+        start_date: btStartDate,
+        end_date: btEndDate,
+        initial_capital: parseFloat(btCapital) || 100000,
+        timeframe,
+        instruments: instruments.length > 0 ? instruments : undefined,
+      });
+
+      router.push(`/backtests/${backtestId}`);
+    } catch (err: any) {
+      setSaveError(
+        err.response?.data?.detail || err.message || "Failed to run backtest"
+      );
+    } finally {
+      setIsRunningBacktest(false);
+    }
+  };
+
   // Loading state
   if (storeLoading && !initialized) {
     return (
@@ -257,6 +310,14 @@ export default function EditStrategyPage() {
             )}
             Save Strategy
           </Button>
+          <Button
+            variant="default"
+            onClick={() => setShowBacktestPanel(!showBacktestPanel)}
+            className="bg-green-600 hover:bg-green-700"
+          >
+            <FlaskConical className="h-4 w-4 mr-2" />
+            Run Backtest
+          </Button>
         </div>
       </div>
 
@@ -316,6 +377,67 @@ export default function EditStrategyPage() {
         <div className="flex items-center space-x-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive flex-shrink-0">
           <XCircle className="h-4 w-4 flex-shrink-0" />
           <span>{saveError}</span>
+        </div>
+      )}
+
+      {/* Backtest config panel */}
+      {showBacktestPanel && (
+        <div className="flex items-center gap-4 rounded-lg border border-green-500/50 bg-green-500/10 p-4 flex-shrink-0">
+          <FlaskConical className="h-5 w-5 text-green-600 flex-shrink-0" />
+          <div className="flex items-center gap-3 flex-1 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bt-start" className="text-sm whitespace-nowrap">Start</Label>
+              <Input
+                id="bt-start"
+                type="date"
+                value={btStartDate}
+                onChange={(e) => setBtStartDate(e.target.value)}
+                className="w-40 h-8 text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bt-end" className="text-sm whitespace-nowrap">End</Label>
+              <Input
+                id="bt-end"
+                type="date"
+                value={btEndDate}
+                onChange={(e) => setBtEndDate(e.target.value)}
+                className="w-40 h-8 text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bt-capital" className="text-sm whitespace-nowrap">Capital</Label>
+              <Input
+                id="bt-capital"
+                type="number"
+                value={btCapital}
+                onChange={(e) => setBtCapital(e.target.value)}
+                className="w-32 h-8 text-sm"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowBacktestPanel(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleRunBacktest}
+              disabled={isRunningBacktest}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {isRunningBacktest ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <FlaskConical className="h-4 w-4 mr-2" />
+              )}
+              Run
+            </Button>
+          </div>
         </div>
       )}
 
