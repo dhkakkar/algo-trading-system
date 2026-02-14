@@ -10,7 +10,7 @@ from app.services import backtest_service
 router = APIRouter(prefix="/backtests", tags=["Backtests"])
 
 
-@router.get("/", response_model=list[BacktestListResponse])
+@router.get("", response_model=list[BacktestListResponse])
 async def list_backtests(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -19,7 +19,7 @@ async def list_backtests(
     return backtests
 
 
-@router.post("/", response_model=BacktestResponse, status_code=201)
+@router.post("", response_model=BacktestResponse, status_code=201)
 async def create_backtest(
     data: BacktestCreate,
     current_user: User = Depends(get_current_user),

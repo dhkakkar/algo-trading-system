@@ -18,7 +18,7 @@ from app.exceptions import BadRequestException
 router = APIRouter(prefix="/strategies", tags=["Strategies"])
 
 
-@router.get("/", response_model=list[StrategyListResponse])
+@router.get("", response_model=list[StrategyListResponse])
 async def list_strategies(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -27,7 +27,7 @@ async def list_strategies(
     return strategies
 
 
-@router.post("/", response_model=StrategyResponse, status_code=201)
+@router.post("", response_model=StrategyResponse, status_code=201)
 async def create_strategy(
     data: StrategyCreate,
     current_user: User = Depends(get_current_user),
