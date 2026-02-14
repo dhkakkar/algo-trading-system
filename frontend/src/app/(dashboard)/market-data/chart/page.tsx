@@ -38,6 +38,16 @@ const INTERVAL_TO_KITE: Record<string, string> = {
   "1d": "day",
 };
 
+// How many days to look back per scroll-load for each interval
+const SCROLL_LOOKBACK: Record<string, number> = {
+  "1m": 7,
+  "5m": 30,
+  "15m": 30,
+  "30m": 60,
+  "1h": 90,
+  "1d": 365,
+};
+
 export default function ChartPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -63,6 +73,25 @@ export default function ChartPage() {
   const chartRef = useRef<any>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
+
+  // Infinite scroll refs
+  const dataRef = useRef<OHLCVBar[]>([]);
+  const earliestDateRef = useRef(fromDate);
+  const loadingOlderRef = useRef(false);
+  const noMoreDataRef = useRef(false);
+  const isScrollLoadRef = useRef(false);
+  const loadOlderDataRef = useRef<() => Promise<void>>();
+
+  // Keep dataRef in sync with state
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  // Reset scroll state when key params change
+  useEffect(() => {
+    earliestDateRef.current = fromDate;
+    noMoreDataRef.current = false;
+  }, [fromDate, interval, symbol]);
 
   const fetchData = useCallback(async () => {
     if (!symbol) return;
@@ -112,9 +141,121 @@ export default function ChartPage() {
     fetchData();
   }, [fetchData]);
 
+  // Load older data when user scrolls past the left edge
+  const loadOlderData = useCallback(async () => {
+    if (loadingOlderRef.current || noMoreDataRef.current || !symbol) return;
+    loadingOlderRef.current = true;
+
+    const lookbackDays = SCROLL_LOOKBACK[interval] || 180;
+    const currentEarliest = earliestDateRef.current;
+    const newFrom = new Date(currentEarliest);
+    newFrom.setDate(newFrom.getDate() - lookbackDays);
+    const newFromStr = newFrom.toISOString().slice(0, 10);
+
+    try {
+      // Sync from Kite if superadmin
+      if (user?.is_superadmin) {
+        const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
+        try {
+          await apiClient.post("/admin/fetch-historical", {
+            symbol,
+            exchange,
+            from_date: newFromStr,
+            to_date: currentEarliest,
+            interval: kiteInterval,
+          });
+        } catch {
+          // non-fatal
+        }
+      }
+
+      // Load from DB for the extended range
+      const res = await apiClient.get("/market-data/ohlcv", {
+        params: {
+          symbol,
+          exchange,
+          from_date: newFromStr,
+          to_date: currentEarliest,
+          interval,
+        },
+      });
+
+      // Deduplicate against existing data
+      const existingTimes = new Set(dataRef.current.map((b) => b.time));
+      const newBars: OHLCVBar[] = (res.data as OHLCVBar[]).filter(
+        (b) => !existingTimes.has(b.time)
+      );
+
+      if (newBars.length === 0) {
+        noMoreDataRef.current = true;
+      } else {
+        const merged = [...newBars, ...dataRef.current];
+        earliestDateRef.current = newFromStr;
+        isScrollLoadRef.current = true;
+        setData(merged);
+      }
+    } catch {
+      // Silently fail for scroll loads
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [symbol, exchange, interval, user?.is_superadmin]);
+
+  // Keep loadOlderData ref current for use in chart event handlers (avoids stale closures)
+  useEffect(() => {
+    loadOlderDataRef.current = loadOlderData;
+  }, [loadOlderData]);
+
   // Render chart
   useEffect(() => {
     if (!chartContainerRef.current || data.length === 0) return;
+
+    const isDaily = interval === "1d";
+
+    const parseTime = (timeStr: string) => {
+      if (isDaily) {
+        return timeStr.slice(0, 10); // "YYYY-MM-DD"
+      }
+      // For intraday, convert to unix timestamp (seconds)
+      return Math.floor(new Date(timeStr).getTime() / 1000);
+    };
+
+    const candleData = data.map((bar) => ({
+      time: parseTime(bar.time),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+    }));
+
+    const volumeData = data.map((bar) => ({
+      time: parseTime(bar.time),
+      value: bar.volume,
+      color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+    }));
+
+    // Scroll load: update series data in-place, preserve scroll position
+    if (
+      isScrollLoadRef.current &&
+      chartRef.current &&
+      candleSeriesRef.current &&
+      volumeSeriesRef.current
+    ) {
+      isScrollLoadRef.current = false;
+
+      // Save current visible time range so we can restore it after data update
+      const visibleRange = chartRef.current.timeScale().getVisibleRange();
+
+      candleSeriesRef.current.setData(candleData as any);
+      volumeSeriesRef.current.setData(volumeData as any);
+
+      // Restore scroll position so the view doesn't jump
+      if (visibleRange) {
+        chartRef.current.timeScale().setVisibleRange(visibleRange);
+      }
+      return;
+    }
+    isScrollLoadRef.current = false;
 
     // Clean up old chart
     if (chartRef.current) {
@@ -169,31 +310,6 @@ export default function ChartPage() {
         scaleMargins: { top: 0.8, bottom: 0 },
       });
 
-      // Transform data — daily uses date strings, intraday uses unix timestamps
-      const isDaily = interval === "1d";
-
-      const parseTime = (timeStr: string) => {
-        if (isDaily) {
-          return timeStr.slice(0, 10); // "YYYY-MM-DD"
-        }
-        // For intraday, convert to unix timestamp (seconds)
-        return Math.floor(new Date(timeStr).getTime() / 1000);
-      };
-
-      const candleData = data.map((bar) => ({
-        time: parseTime(bar.time),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-      }));
-
-      const volumeData = data.map((bar) => ({
-        time: parseTime(bar.time),
-        value: bar.volume,
-        color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-      }));
-
       candleSeries.setData(candleData as any);
       volumeSeries.setData(volumeData as any);
       chart.timeScale().fitContent();
@@ -201,6 +317,13 @@ export default function ChartPage() {
       chartRef.current = chart;
       candleSeriesRef.current = candleSeries;
       volumeSeriesRef.current = volumeSeries;
+
+      // Infinite scroll: detect when user scrolls near the left edge
+      chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange: any) => {
+        if (logicalRange && logicalRange.from < 10) {
+          loadOlderDataRef.current?.();
+        }
+      });
 
       // Resize handler
       const handleResize = () => {
