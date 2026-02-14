@@ -80,7 +80,7 @@ export default function ChartPage() {
   const loadingOlderRef = useRef(false);
   const noMoreDataRef = useRef(false);
   const isScrollLoadRef = useRef(false);
-  const loadOlderDataRef = useRef<() => Promise<void>>();
+  const loadOlderDataRef = useRef<() => Promise<void>>(undefined);
 
   // Keep dataRef in sync with state
   useEffect(() => {
