@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends
+from datetime import date
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.services import platform_service
-from app.exceptions import ForbiddenException
+from app.exceptions import ForbiddenException, BadRequestException
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -133,3 +134,136 @@ async def refresh_instruments(
 
     count = await market_data_service.refresh_instruments_from_kite(db, kite_client)
     return {"message": f"Refreshed {count} instruments from Kite Connect", "count": count}
+
+
+class FetchHistoricalRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, examples=["RELIANCE"])
+    exchange: str = Field(default="NSE", examples=["NSE"])
+    from_date: date
+    to_date: date
+    interval: str = Field(default="day", examples=["day", "minute", "5minute", "15minute"])
+
+
+@router.post("/fetch-historical")
+async def fetch_historical_data(
+    data: FetchHistoricalRequest,
+    admin: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch historical OHLCV data from Kite and store in DB."""
+    import asyncio
+    from app.integrations.kite_connect.client import kite_manager
+    from app.services import market_data_service
+    from app.models.instrument import Instrument
+
+    kite_client = await kite_manager.get_client(db, str(admin.id))
+    if not kite_client:
+        raise BadRequestException("Connect your Kite account first.")
+
+    # Find instrument token
+    result = await db.execute(
+        select(Instrument).where(
+            Instrument.tradingsymbol == data.symbol.upper(),
+            Instrument.exchange == data.exchange.upper(),
+        ).limit(1)
+    )
+    instrument = result.scalar_one_or_none()
+    if not instrument:
+        raise BadRequestException(
+            f"Instrument {data.exchange}:{data.symbol} not found. Load instruments first."
+        )
+
+    count = await market_data_service.fetch_and_store_from_kite(
+        db, kite_client,
+        instrument_token=instrument.instrument_token,
+        symbol=data.symbol.upper(),
+        exchange=data.exchange.upper(),
+        from_date=data.from_date,
+        to_date=data.to_date,
+        interval=data.interval,
+    )
+    return {
+        "message": f"Fetched {count} OHLCV records for {data.exchange}:{data.symbol}",
+        "count": count,
+        "instrument_token": instrument.instrument_token,
+    }
+
+
+@router.post("/seed-test-data")
+async def seed_test_data(
+    admin: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate 1 year of dummy OHLCV data for SBIN (NSE) for quick backtest testing."""
+    import random
+    from datetime import datetime, timedelta, timezone as tz
+    from app.models.market_data import OHLCVData
+    from app.models.instrument import Instrument
+
+    symbol = "SBIN"
+    exchange = "NSE"
+
+    # Find or create instrument
+    result = await db.execute(
+        select(Instrument).where(
+            Instrument.tradingsymbol == symbol,
+            Instrument.exchange == exchange,
+        ).limit(1)
+    )
+    instrument = result.scalar_one_or_none()
+    token = instrument.instrument_token if instrument else 779521
+
+    # Generate 1 year of daily data
+    random.seed(42)
+    start = datetime(2025, 1, 1, tzinfo=tz.utc)
+    price = 800.0
+    records = []
+
+    for day_offset in range(365):
+        dt = start + timedelta(days=day_offset)
+        if dt.weekday() >= 5:  # skip weekends
+            continue
+
+        change_pct = random.gauss(0.0005, 0.018)
+        open_price = round(price, 2)
+        close_price = round(price * (1 + change_pct), 2)
+        high_price = round(max(open_price, close_price) * (1 + abs(random.gauss(0, 0.008))), 2)
+        low_price = round(min(open_price, close_price) * (1 - abs(random.gauss(0, 0.008))), 2)
+        volume = random.randint(5_000_000, 30_000_000)
+
+        records.append(OHLCVData(
+            time=dt.replace(hour=9, minute=15),
+            instrument_token=token,
+            interval="1d",
+            tradingsymbol=symbol,
+            exchange=exchange,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=volume,
+        ))
+        price = close_price
+
+    # Delete existing test data and insert
+    from sqlalchemy import delete, and_
+    await db.execute(
+        delete(OHLCVData).where(
+            and_(
+                OHLCVData.tradingsymbol == symbol,
+                OHLCVData.exchange == exchange,
+                OHLCVData.interval == "1d",
+            )
+        )
+    )
+    db.add_all(records)
+    await db.flush()
+
+    return {
+        "message": f"Seeded {len(records)} daily OHLCV records for {exchange}:{symbol} (Jan 2025 - Dec 2025)",
+        "count": len(records),
+        "symbol": symbol,
+        "exchange": exchange,
+        "instrument_token": token,
+        "date_range": "2025-01-01 to 2025-12-31",
+    }

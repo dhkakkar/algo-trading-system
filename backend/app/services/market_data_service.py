@@ -98,8 +98,10 @@ async def fetch_and_store_from_kite(
     interval: str = "day",
 ) -> int:
     """Fetch historical data from Kite Connect and store in DB."""
+    import asyncio
     try:
-        data = kite_client.historical_data(
+        data = await asyncio.to_thread(
+            kite_client.historical_data,
             instrument_token=instrument_token,
             from_date=from_date,
             to_date=to_date,
