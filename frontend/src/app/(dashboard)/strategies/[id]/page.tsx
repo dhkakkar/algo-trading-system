@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { FileUpload } from "@/components/strategy/file-upload";
+import { InstrumentSearch } from "@/components/strategy/instrument-search";
 import { useStrategyStore } from "@/stores/strategy-store";
 import { useBacktestStore } from "@/stores/backtest-store";
 
@@ -50,7 +51,7 @@ export default function EditStrategyPage() {
   const [description, setDescription] = useState("");
   const [code, setCode] = useState("");
   const [timeframe, setTimeframe] = useState("1d");
-  const [instrumentsText, setInstrumentsText] = useState("");
+  const [instruments, setInstruments] = useState<string[]>([]);
   const [sourceTab, setSourceTab] = useState<SourceTab>("editor");
 
   const { createBacktest } = useBacktestStore();
@@ -86,7 +87,7 @@ export default function EditStrategyPage() {
       setDescription(currentStrategy.description || "");
       setCode(currentStrategy.code);
       setTimeframe(currentStrategy.timeframe || "1d");
-      setInstrumentsText(currentStrategy.instruments?.join(", ") || "");
+      setInstruments(currentStrategy.instruments || []);
       setSourceTab(currentStrategy.source_type === "upload" ? "upload" : "editor");
       setInitialized(true);
     }
@@ -110,11 +111,6 @@ export default function EditStrategyPage() {
     setIsSaving(true);
 
     try {
-      const instruments = instrumentsText
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
       await updateStrategy(id, {
         name: name.trim(),
         description: description.trim() || undefined,
@@ -143,11 +139,6 @@ export default function EditStrategyPage() {
     try {
       // Save first to ensure latest code is persisted
       if (name.trim() && code.trim()) {
-        const instruments = instrumentsText
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-
         await updateStrategy(id, {
           name: name.trim(),
           description: description.trim() || undefined,
@@ -191,10 +182,6 @@ export default function EditStrategyPage() {
     try {
       // Save strategy first
       if (name.trim() && code.trim()) {
-        const instruments = instrumentsText
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
         await updateStrategy(id, {
           name: name.trim(),
           description: description.trim() || undefined,
@@ -203,11 +190,6 @@ export default function EditStrategyPage() {
           instruments: instruments.length > 0 ? instruments : [],
         });
       }
-
-      const instruments = instrumentsText
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
 
       const backtestId = await createBacktest({
         strategy_id: id,
@@ -536,16 +518,8 @@ export default function EditStrategyPage() {
 
             {/* Instruments */}
             <div className="space-y-2">
-              <Label htmlFor="instruments">Instruments</Label>
-              <Input
-                id="instruments"
-                placeholder="RELIANCE, INFY, TCS"
-                value={instrumentsText}
-                onChange={(e) => setInstrumentsText(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Comma-separated list of instrument symbols
-              </p>
+              <Label>Instruments</Label>
+              <InstrumentSearch value={instruments} onChange={setInstruments} />
             </div>
           </div>
 

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { FileUpload } from "@/components/strategy/file-upload";
+import { InstrumentSearch } from "@/components/strategy/instrument-search";
 import { useStrategyStore } from "@/stores/strategy-store";
 
 const TIMEFRAME_OPTIONS = [
@@ -30,7 +31,7 @@ export default function NewStrategyPage() {
   const [description, setDescription] = useState("");
   const [code, setCode] = useState("");
   const [timeframe, setTimeframe] = useState("1d");
-  const [instrumentsText, setInstrumentsText] = useState("");
+  const [instruments, setInstruments] = useState<string[]>([]);
   const [sourceTab, setSourceTab] = useState<SourceTab>("editor");
 
   const [isSaving, setIsSaving] = useState(false);
@@ -59,11 +60,6 @@ export default function NewStrategyPage() {
     setIsSaving(true);
 
     try {
-      const instruments = instrumentsText
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
       await createStrategy({
         name: name.trim(),
         description: description.trim() || undefined,
@@ -100,11 +96,6 @@ export default function NewStrategyPage() {
     }
 
     try {
-      const instruments = instrumentsText
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
       const strategy = await createStrategy({
         name: name.trim(),
         description: description.trim() || undefined,
@@ -307,16 +298,8 @@ export default function NewStrategyPage() {
 
             {/* Instruments */}
             <div className="space-y-2">
-              <Label htmlFor="instruments">Instruments</Label>
-              <Input
-                id="instruments"
-                placeholder="RELIANCE, INFY, TCS"
-                value={instrumentsText}
-                onChange={(e) => setInstrumentsText(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Comma-separated list of instrument symbols
-              </p>
+              <Label>Instruments</Label>
+              <InstrumentSearch value={instruments} onChange={setInstruments} />
             </div>
           </div>
         </div>

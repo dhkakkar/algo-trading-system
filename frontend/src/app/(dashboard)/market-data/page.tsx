@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Search, RefreshCw, AlertCircle, CheckCircle2, LineChart } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 interface Instrument {
   instrument_token: number;
@@ -20,6 +21,7 @@ interface Instrument {
 }
 
 export default function MarketDataPage() {
+  const router = useRouter();
   const { user } = useAuthStore();
   const [query, setQuery] = useState("");
   const [exchange, setExchange] = useState("");
@@ -188,6 +190,7 @@ export default function MarketDataPage() {
                       <th className="text-left py-3 px-2 font-medium">Type</th>
                       <th className="text-right py-3 px-2 font-medium">Lot Size</th>
                       <th className="text-right py-3 px-2 font-medium">Token</th>
+                      <th className="text-right py-3 px-2 font-medium"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -210,6 +213,21 @@ export default function MarketDataPage() {
                         <td className="py-2 px-2 text-right">{inst.lot_size}</td>
                         <td className="py-2 px-2 text-right text-muted-foreground">
                           {inst.instrument_token}
+                        </td>
+                        <td className="py-2 px-2 text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() =>
+                              router.push(
+                                `/market-data/chart?symbol=${encodeURIComponent(inst.tradingsymbol)}&exchange=${encodeURIComponent(inst.exchange)}`
+                              )
+                            }
+                          >
+                            <LineChart className="h-3.5 w-3.5 mr-1" />
+                            Chart
+                          </Button>
                         </td>
                       </tr>
                     ))}
