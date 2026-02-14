@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, Download } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,7 +57,6 @@ export default function ChartPage() {
   const [data, setData] = useState<OHLCVBar[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [fetching, setFetching] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<string | null>(null);
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -65,25 +64,16 @@ export default function ChartPage() {
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
 
-  const fetchData = useCallback(async (autoFetch = false) => {
+  const fetchData = useCallback(async () => {
     if (!symbol) return;
     setLoading(true);
     setError(null);
     setFetchMsg(null);
-    try {
-      const res = await apiClient.get("/market-data/ohlcv", {
-        params: {
-          symbol,
-          exchange,
-          from_date: fromDate,
-          to_date: toDate,
-          interval,
-        },
-      });
 
-      if (res.data.length === 0 && autoFetch && user?.is_superadmin) {
-        // Auto-fetch from Kite when no data exists
-        setFetchMsg("No local data — fetching from Kite...");
+    try {
+      // For superadmins: always sync from Kite first, then load from DB
+      if (user?.is_superadmin) {
+        setFetchMsg("Syncing data from Kite...");
         try {
           const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
           const fetchRes = await apiClient.post("/admin/fetch-historical", {
@@ -93,24 +83,21 @@ export default function ChartPage() {
             to_date: toDate,
             interval: kiteInterval,
           });
-          setFetchMsg(`Fetched ${fetchRes.data.count} records from Kite`);
-          // Re-query the DB
-          const res2 = await apiClient.get("/market-data/ohlcv", {
-            params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
-          });
-          setData(res2.data);
-          if (res2.data.length === 0) {
-            setError("No data available even after fetching from Kite.");
-          }
+          setFetchMsg(`Synced ${fetchRes.data.count} records from Kite`);
         } catch (fetchErr: any) {
-          setFetchMsg(fetchErr.response?.data?.detail || "Auto-fetch from Kite failed");
-          setError("No data available for this timeframe.");
+          // Non-fatal — still try to load whatever is in DB
+          setFetchMsg(fetchErr.response?.data?.detail || "Kite sync failed — showing cached data");
         }
-      } else {
-        setData(res.data);
-        if (res.data.length === 0) {
-          setError("No data available for the selected date range.");
-        }
+      }
+
+      // Load from DB
+      const res = await apiClient.get("/market-data/ohlcv", {
+        params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
+      });
+      setData(res.data);
+      if (res.data.length === 0) {
+        setError("No data available for the selected date range.");
+        setFetchMsg(null);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || "Failed to load chart data");
@@ -120,31 +107,9 @@ export default function ChartPage() {
     }
   }, [symbol, exchange, fromDate, toDate, interval, user?.is_superadmin]);
 
-  const handleFetchFromKite = async () => {
-    setFetching(true);
-    setFetchMsg(null);
-    try {
-      const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
-      const res = await apiClient.post("/admin/fetch-historical", {
-        symbol,
-        exchange,
-        from_date: fromDate,
-        to_date: toDate,
-        interval: kiteInterval,
-      });
-      setFetchMsg(`Fetched ${res.data.count} records`);
-      // Reload chart data
-      await fetchData();
-    } catch (err: any) {
-      setFetchMsg(err.response?.data?.detail || "Failed to fetch from Kite");
-    } finally {
-      setFetching(false);
-    }
-  };
-
-  // Fetch on mount and when params change — auto-fetch from Kite if no local data
+  // Fetch on mount and when params change
   useEffect(() => {
-    fetchData(true);
+    fetchData();
   }, [fetchData]);
 
   // Render chart
@@ -336,22 +301,6 @@ export default function ChartPage() {
           />
         </div>
 
-        {user?.is_superadmin && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleFetchFromKite}
-            disabled={fetching}
-            className="h-8"
-          >
-            {fetching ? (
-              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-            ) : (
-              <Download className="h-3.5 w-3.5 mr-1.5" />
-            )}
-            {fetching ? "Fetching..." : "Fetch from Kite"}
-          </Button>
-        )}
       </div>
 
       {/* Fetch status message */}
@@ -363,25 +312,15 @@ export default function ChartPage() {
       <div className="flex-1 min-h-0 rounded-lg border bg-card relative">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <div className="flex flex-col items-center gap-2">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              {fetchMsg && <p className="text-sm text-muted-foreground">{fetchMsg}</p>}
+            </div>
           </div>
         )}
         {error && !loading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+          <div className="absolute inset-0 flex items-center justify-center">
             <p className="text-muted-foreground text-sm">{error}</p>
-            {user?.is_superadmin && (
-              <Button
-                onClick={handleFetchFromKite}
-                disabled={fetching}
-              >
-                {fetching ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Download className="h-4 w-4 mr-2" />
-                )}
-                {fetching ? "Fetching from Kite..." : "Fetch Historical Data from Kite"}
-              </Button>
-            )}
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full min-h-[400px]" />
