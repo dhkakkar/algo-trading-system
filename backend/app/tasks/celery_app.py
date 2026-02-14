@@ -18,5 +18,5 @@ celery_app.conf.update(
     worker_max_tasks_per_child=50,
 )
 
-# Auto-discover tasks
-celery_app.autodiscover_tasks(["app.tasks"])
+# Explicitly register task modules
+celery_app.conf.include = ["app.tasks.backtest_tasks"]
