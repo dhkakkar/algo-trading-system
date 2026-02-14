@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Download } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import apiClient from "@/lib/api-client";
+import { useAuthStore } from "@/stores/auth-store";
 
 const INTERVAL_OPTIONS = [
   { value: "1m", label: "1m" },
@@ -27,9 +28,20 @@ interface OHLCVBar {
   volume: number;
 }
 
+// Map our interval codes to Kite API interval names
+const INTERVAL_TO_KITE: Record<string, string> = {
+  "1m": "minute",
+  "5m": "5minute",
+  "15m": "15minute",
+  "30m": "30minute",
+  "1h": "60minute",
+  "1d": "day",
+};
+
 export default function ChartPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { user } = useAuthStore();
 
   const symbol = searchParams.get("symbol") || "";
   const exchange = searchParams.get("exchange") || "NSE";
@@ -45,6 +57,8 @@ export default function ChartPage() {
   const [data, setData] = useState<OHLCVBar[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState<string | null>(null);
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
@@ -76,6 +90,28 @@ export default function ChartPage() {
       setLoading(false);
     }
   }, [symbol, exchange, fromDate, toDate, interval]);
+
+  const handleFetchFromKite = async () => {
+    setFetching(true);
+    setFetchMsg(null);
+    try {
+      const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
+      const res = await apiClient.post("/admin/fetch-historical", {
+        symbol,
+        exchange,
+        from_date: fromDate,
+        to_date: toDate,
+        interval: kiteInterval,
+      });
+      setFetchMsg(`Fetched ${res.data.count} records`);
+      // Reload chart data
+      await fetchData();
+    } catch (err: any) {
+      setFetchMsg(err.response?.data?.detail || "Failed to fetch from Kite");
+    } finally {
+      setFetching(false);
+    }
+  };
 
   // Fetch on mount and when params change
   useEffect(() => {
@@ -266,7 +302,29 @@ export default function ChartPage() {
             className="w-40 h-8 text-sm"
           />
         </div>
+
+        {user?.is_superadmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleFetchFromKite}
+            disabled={fetching}
+            className="h-8"
+          >
+            {fetching ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {fetching ? "Fetching..." : "Fetch from Kite"}
+          </Button>
+        )}
       </div>
+
+      {/* Fetch status message */}
+      {fetchMsg && (
+        <div className="text-sm text-muted-foreground flex-shrink-0">{fetchMsg}</div>
+      )}
 
       {/* Chart area */}
       <div className="flex-1 min-h-0 rounded-lg border bg-card relative">
@@ -276,8 +334,21 @@ export default function ChartPage() {
           </div>
         )}
         {error && !loading && (
-          <div className="absolute inset-0 flex items-center justify-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
             <p className="text-muted-foreground text-sm">{error}</p>
+            {user?.is_superadmin && (
+              <Button
+                onClick={handleFetchFromKite}
+                disabled={fetching}
+              >
+                {fetching ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4 mr-2" />
+                )}
+                {fetching ? "Fetching from Kite..." : "Fetch Historical Data from Kite"}
+              </Button>
+            )}
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full min-h-[400px]" />
