@@ -4,6 +4,8 @@ export interface User {
   full_name: string;
   is_active: boolean;
   is_verified: boolean;
+  is_superadmin: boolean;
+  trading_mode: string;
   created_at: string;
 }
 

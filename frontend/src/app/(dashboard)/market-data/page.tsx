@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import apiClient from "@/lib/api-client";
+import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search } from "lucide-react";
+import { Search, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
 
 interface Instrument {
   instrument_token: number;
@@ -19,11 +20,18 @@ interface Instrument {
 }
 
 export default function MarketDataPage() {
+  const { user } = useAuthStore();
   const [query, setQuery] = useState("");
   const [exchange, setExchange] = useState("");
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -41,14 +49,65 @@ export default function MarketDataPage() {
     }
   };
 
+  const handleRefreshInstruments = async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const res = await apiClient.post("/admin/instruments/refresh");
+      setRefreshMsg({
+        type: "success",
+        text: res.data.message || `Loaded ${res.data.count} instruments`,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.detail ||
+        "Failed to load instruments. Make sure your Kite account is connected in Settings.";
+      setRefreshMsg({ type: "error", text: msg });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Market Data</h1>
-        <p className="text-muted-foreground">
-          Browse instruments and historical data
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Market Data</h1>
+          <p className="text-muted-foreground">
+            Browse instruments and historical data
+          </p>
+        </div>
+        {user?.is_superadmin && (
+          <Button
+            onClick={handleRefreshInstruments}
+            disabled={refreshing}
+            variant="outline"
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`}
+            />
+            {refreshing ? "Loading instruments..." : "Load Instruments from Kite"}
+          </Button>
+        )}
       </div>
+
+      {/* Refresh status message */}
+      {refreshMsg && (
+        <div
+          className={`flex items-center gap-2 p-3 rounded-lg border text-sm ${
+            refreshMsg.type === "success"
+              ? "bg-green-50 border-green-200 text-green-800 dark:bg-green-950 dark:border-green-800 dark:text-green-200"
+              : "bg-red-50 border-red-200 text-red-800 dark:bg-red-950 dark:border-red-800 dark:text-red-200"
+          }`}
+        >
+          {refreshMsg.type === "success" ? (
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+          ) : (
+            <AlertCircle className="h-4 w-4 shrink-0" />
+          )}
+          {refreshMsg.text}
+        </div>
+      )}
 
       {/* Search */}
       <Card>
@@ -100,8 +159,22 @@ export default function MarketDataPage() {
           </CardHeader>
           <CardContent>
             {instruments.length === 0 ? (
-              <div className="flex items-center justify-center h-32 text-muted-foreground">
-                {loading ? "Searching..." : "No instruments found. Make sure instrument data has been loaded."}
+              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground space-y-2">
+                <p>
+                  {loading
+                    ? "Searching..."
+                    : "No instruments found."}
+                </p>
+                {!loading && user?.is_superadmin && (
+                  <p className="text-sm">
+                    Click &quot;Load Instruments from Kite&quot; above to fetch the instrument list.
+                  </p>
+                )}
+                {!loading && !user?.is_superadmin && (
+                  <p className="text-sm">
+                    Ask your admin to load instrument data from Kite Connect.
+                  </p>
+                )}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -119,14 +192,25 @@ export default function MarketDataPage() {
                   </thead>
                   <tbody>
                     {instruments.map((inst) => (
-                      <tr key={inst.instrument_token} className="border-b hover:bg-muted/50">
-                        <td className="py-2 px-2 font-medium">{inst.tradingsymbol}</td>
-                        <td className="py-2 px-2 text-muted-foreground">{inst.name || "-"}</td>
+                      <tr
+                        key={inst.instrument_token}
+                        className="border-b hover:bg-muted/50"
+                      >
+                        <td className="py-2 px-2 font-medium">
+                          {inst.tradingsymbol}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground">
+                          {inst.name || "-"}
+                        </td>
                         <td className="py-2 px-2">{inst.exchange}</td>
                         <td className="py-2 px-2">{inst.segment || "-"}</td>
-                        <td className="py-2 px-2">{inst.instrument_type || "-"}</td>
+                        <td className="py-2 px-2">
+                          {inst.instrument_type || "-"}
+                        </td>
                         <td className="py-2 px-2 text-right">{inst.lot_size}</td>
-                        <td className="py-2 px-2 text-right text-muted-foreground">{inst.instrument_token}</td>
+                        <td className="py-2 px-2 text-right text-muted-foreground">
+                          {inst.instrument_token}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -119,45 +119,46 @@ async def fetch_and_store_from_kite(
 
 
 async def refresh_instruments_from_kite(db: AsyncSession, kite_client) -> int:
-    """Download and store the full Zerodha instrument list."""
-    instruments = kite_client.instruments()
+    """Download and store the full Zerodha instrument list using bulk operations."""
+    import asyncio
+    from sqlalchemy import delete
+
+    # kite_client.instruments() is sync (uses requests), so run in thread
+    instruments = await asyncio.to_thread(kite_client.instruments)
+    now = datetime.now(timezone.utc)
+
+    # Delete all existing instruments and bulk-insert fresh data
+    await db.execute(delete(Instrument))
+
+    BATCH_SIZE = 2000
     count = 0
 
-    for inst in instruments:
-        existing = await db.execute(
-            select(Instrument).where(Instrument.instrument_token == inst["instrument_token"])
-        )
-        db_inst = existing.scalar_one_or_none()
-
-        if db_inst:
-            db_inst.tradingsymbol = inst["tradingsymbol"]
-            db_inst.name = inst.get("name", "")
-            db_inst.exchange = inst["exchange"]
-            db_inst.segment = inst.get("segment", "")
-            db_inst.instrument_type = inst.get("instrument_type", "")
-            db_inst.lot_size = inst.get("lot_size", 1)
-            db_inst.tick_size = inst.get("tick_size")
-            db_inst.expiry = inst.get("expiry")
-            db_inst.strike = inst.get("strike")
-            db_inst.last_updated = datetime.now(timezone.utc)
-        else:
-            db_inst = Instrument(
-                instrument_token=inst["instrument_token"],
-                exchange_token=inst.get("exchange_token"),
-                tradingsymbol=inst["tradingsymbol"],
-                name=inst.get("name", ""),
-                exchange=inst["exchange"],
-                segment=inst.get("segment", ""),
-                instrument_type=inst.get("instrument_type", ""),
-                lot_size=inst.get("lot_size", 1),
-                tick_size=inst.get("tick_size"),
-                expiry=inst.get("expiry"),
-                strike=inst.get("strike"),
-                last_updated=datetime.now(timezone.utc),
+    for i in range(0, len(instruments), BATCH_SIZE):
+        batch = instruments[i : i + BATCH_SIZE]
+        rows = []
+        for inst in batch:
+            expiry = inst.get("expiry")
+            if expiry and not isinstance(expiry, date):
+                expiry = None
+            rows.append(
+                Instrument(
+                    instrument_token=inst["instrument_token"],
+                    exchange_token=inst.get("exchange_token"),
+                    tradingsymbol=inst["tradingsymbol"],
+                    name=inst.get("name") or "",
+                    exchange=inst["exchange"],
+                    segment=inst.get("segment") or "",
+                    instrument_type=inst.get("instrument_type") or "",
+                    lot_size=inst.get("lot_size", 1),
+                    tick_size=inst.get("tick_size"),
+                    expiry=expiry,
+                    strike=inst.get("strike"),
+                    last_updated=now,
+                )
             )
-            db.add(db_inst)
-        count += 1
+        db.add_all(rows)
+        await db.flush()
+        count += len(rows)
 
-    await db.flush()
     logger.info(f"Refreshed {count} instruments from Kite")
     return count
