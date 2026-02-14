@@ -613,6 +613,8 @@ class BacktestRunner(BaseRunner):
         namespace: dict[str, Any] = {
             "Strategy": Strategy,
             "__builtins__": {
+                # Required for class definitions
+                "__build_class__": __builtins__["__build_class__"] if isinstance(__builtins__, dict) else __builtins__.__build_class__,
                 # Allow safe built-ins
                 "abs": abs,
                 "all": all,
