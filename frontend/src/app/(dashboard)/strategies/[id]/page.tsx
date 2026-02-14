@@ -10,6 +10,8 @@ import {
   Save,
   Trash2,
   FlaskConical,
+  Play,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -20,6 +22,7 @@ import { FileUpload } from "@/components/strategy/file-upload";
 import { InstrumentSearch } from "@/components/strategy/instrument-search";
 import { useStrategyStore } from "@/stores/strategy-store";
 import { useBacktestStore } from "@/stores/backtest-store";
+import { useTradingStore } from "@/stores/trading-store";
 
 const TIMEFRAME_OPTIONS = [
   { value: "1m", label: "1 Minute" },
@@ -55,6 +58,7 @@ export default function EditStrategyPage() {
   const [sourceTab, setSourceTab] = useState<SourceTab>("editor");
 
   const { createBacktest } = useBacktestStore();
+  const { createSession, startSession } = useTradingStore();
 
   const [isSaving, setIsSaving] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
@@ -65,6 +69,11 @@ export default function EditStrategyPage() {
   const [btStartDate, setBtStartDate] = useState("2025-01-01");
   const [btEndDate, setBtEndDate] = useState("2025-12-31");
   const [btCapital, setBtCapital] = useState("100000");
+
+  // Trading session state
+  const [showTradingPanel, setShowTradingPanel] = useState<"paper" | "live" | null>(null);
+  const [tradingCapital, setTradingCapital] = useState("100000");
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [validationResult, setValidationResult] = useState<{
     valid: boolean;
     error: string | null;
@@ -210,6 +219,45 @@ export default function EditStrategyPage() {
     }
   };
 
+  const handleStartTrading = async (mode: "paper" | "live") => {
+    setIsCreatingSession(true);
+    setSaveError(null);
+
+    try {
+      // Save strategy first
+      if (name.trim() && code.trim()) {
+        await updateStrategy(id, {
+          name: name.trim(),
+          description: description.trim() || undefined,
+          code,
+          timeframe,
+          instruments: instruments.length > 0 ? instruments : [],
+        });
+      }
+
+      // Create session
+      const sessionId = await createSession({
+        strategy_id: id,
+        mode,
+        initial_capital: parseFloat(tradingCapital) || 100000,
+        instruments: instruments.length > 0 ? instruments : undefined,
+        timeframe,
+      });
+
+      // Auto-start the session
+      await startSession(sessionId);
+
+      // Navigate to the trading detail page
+      router.push(`/${mode === "paper" ? "paper-trading" : "live-trading"}/${sessionId}`);
+    } catch (err: any) {
+      setSaveError(
+        err.response?.data?.detail || err.message || `Failed to start ${mode} trading`
+      );
+    } finally {
+      setIsCreatingSession(false);
+    }
+  };
+
   // Loading state
   if (storeLoading && !initialized) {
     return (
@@ -299,6 +347,22 @@ export default function EditStrategyPage() {
           >
             <FlaskConical className="h-4 w-4 mr-2" />
             Run Backtest
+          </Button>
+          <Button
+            variant="default"
+            onClick={() => setShowTradingPanel(showTradingPanel === "paper" ? null : "paper")}
+            className="bg-blue-600 hover:bg-blue-700"
+          >
+            <Play className="h-4 w-4 mr-2" />
+            Paper Trade
+          </Button>
+          <Button
+            variant="default"
+            onClick={() => setShowTradingPanel(showTradingPanel === "live" ? null : "live")}
+            className="bg-orange-600 hover:bg-orange-700"
+          >
+            <Zap className="h-4 w-4 mr-2" />
+            Live Trade
           </Button>
         </div>
       </div>
@@ -418,6 +482,71 @@ export default function EditStrategyPage() {
                 <FlaskConical className="h-4 w-4 mr-2" />
               )}
               Run
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Trading session config panel */}
+      {showTradingPanel && (
+        <div
+          className={`flex items-center gap-4 rounded-lg border p-4 flex-shrink-0 ${
+            showTradingPanel === "paper"
+              ? "border-blue-500/50 bg-blue-500/10"
+              : "border-orange-500/50 bg-orange-500/10"
+          }`}
+        >
+          {showTradingPanel === "paper" ? (
+            <Play className="h-5 w-5 text-blue-600 flex-shrink-0" />
+          ) : (
+            <Zap className="h-5 w-5 text-orange-600 flex-shrink-0" />
+          )}
+          <div className="flex items-center gap-3 flex-1 flex-wrap">
+            <span className="text-sm font-medium">
+              {showTradingPanel === "paper" ? "Paper Trading" : "Live Trading"}
+            </span>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="trading-capital" className="text-sm whitespace-nowrap">
+                Capital
+              </Label>
+              <Input
+                id="trading-capital"
+                type="number"
+                value={tradingCapital}
+                onChange={(e) => setTradingCapital(e.target.value)}
+                className="w-32 h-8 text-sm"
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Timeframe: {timeframe} | Instruments: {instruments.length > 0 ? instruments.join(", ") : "from strategy code"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowTradingPanel(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => handleStartTrading(showTradingPanel)}
+              disabled={isCreatingSession}
+              className={
+                showTradingPanel === "paper"
+                  ? "bg-blue-600 hover:bg-blue-700"
+                  : "bg-orange-600 hover:bg-orange-700"
+              }
+            >
+              {isCreatingSession ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : showTradingPanel === "paper" ? (
+                <Play className="h-4 w-4 mr-2" />
+              ) : (
+                <Zap className="h-4 w-4 mr-2" />
+              )}
+              Start {showTradingPanel === "paper" ? "Paper" : "Live"} Trading
             </Button>
           </div>
         </div>
