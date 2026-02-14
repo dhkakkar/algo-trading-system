@@ -120,24 +120,53 @@ async def fetch_and_store_from_kite(
     to_date: date,
     interval: str = "day",
 ) -> int:
-    """Fetch historical data from Kite Connect and store in DB."""
+    """Fetch historical data from Kite Connect and store in DB.
+
+    Automatically chunks large date ranges based on Kite API limits:
+      minute: 60 days, 3/5/10/15/30minute: 100 days,
+      60minute: 400 days, day: 2000 days
+    """
     import asyncio
+    from datetime import timedelta
+
+    # Kite API max days per request by interval
+    max_days = {
+        "minute": 60, "3minute": 100, "5minute": 100,
+        "10minute": 100, "15minute": 100, "30minute": 100,
+        "60minute": 400, "day": 2000,
+    }
+    chunk_days = max_days.get(interval, 2000)
+
+    # Map Kite interval names to our interval codes
+    interval_map = {
+        "minute": "1m", "3minute": "3m", "5minute": "5m",
+        "10minute": "10m", "15minute": "15m", "30minute": "30m",
+        "60minute": "1h", "day": "1d",
+    }
+    db_interval = interval_map.get(interval, interval)
+
+    total_count = 0
+    chunk_start = from_date
+
     try:
-        data = await asyncio.to_thread(
-            kite_client.historical_data,
-            instrument_token=instrument_token,
-            from_date=from_date,
-            to_date=to_date,
-            interval=interval,
-        )
-        # Map Kite interval names to our interval codes
-        interval_map = {
-            "minute": "1m", "3minute": "3m", "5minute": "5m",
-            "10minute": "10m", "15minute": "15m", "30minute": "30m",
-            "60minute": "1h", "day": "1d",
-        }
-        db_interval = interval_map.get(interval, interval)
-        return await store_ohlcv(db, data, symbol, exchange, instrument_token, db_interval)
+        while chunk_start <= to_date:
+            chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), to_date)
+
+            data = await asyncio.to_thread(
+                kite_client.historical_data,
+                instrument_token=instrument_token,
+                from_date=chunk_start,
+                to_date=chunk_end,
+                interval=interval,
+            )
+
+            if data:
+                count = await store_ohlcv(db, data, symbol, exchange, instrument_token, db_interval)
+                total_count += count
+
+            chunk_start = chunk_end + timedelta(days=1)
+
+        return total_count
     except Exception as e:
         logger.error(f"Error fetching data from Kite: {e}")
         raise
