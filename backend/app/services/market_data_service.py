@@ -140,19 +140,35 @@ async def refresh_instruments_from_kite(db: AsyncSession, kite_client) -> int:
             expiry = inst.get("expiry")
             if expiry and not isinstance(expiry, date):
                 expiry = None
+            # Kite returns some numeric fields as strings — cast them
+            exchange_token = inst.get("exchange_token")
+            try:
+                exchange_token = int(exchange_token) if exchange_token else None
+            except (ValueError, TypeError):
+                exchange_token = None
+            tick_size = inst.get("tick_size")
+            try:
+                tick_size = float(tick_size) if tick_size else None
+            except (ValueError, TypeError):
+                tick_size = None
+            strike = inst.get("strike")
+            try:
+                strike = float(strike) if strike else None
+            except (ValueError, TypeError):
+                strike = None
             rows.append(
                 Instrument(
-                    instrument_token=inst["instrument_token"],
-                    exchange_token=inst.get("exchange_token"),
-                    tradingsymbol=inst["tradingsymbol"],
-                    name=inst.get("name") or "",
-                    exchange=inst["exchange"],
-                    segment=inst.get("segment") or "",
-                    instrument_type=inst.get("instrument_type") or "",
-                    lot_size=inst.get("lot_size", 1),
-                    tick_size=inst.get("tick_size"),
+                    instrument_token=int(inst["instrument_token"]),
+                    exchange_token=exchange_token,
+                    tradingsymbol=str(inst["tradingsymbol"]),
+                    name=str(inst.get("name") or ""),
+                    exchange=str(inst["exchange"]),
+                    segment=str(inst.get("segment") or ""),
+                    instrument_type=str(inst.get("instrument_type") or ""),
+                    lot_size=int(inst.get("lot_size", 1)),
+                    tick_size=tick_size,
                     expiry=expiry,
-                    strike=inst.get("strike"),
+                    strike=strike,
                     last_updated=now,
                 )
             )
