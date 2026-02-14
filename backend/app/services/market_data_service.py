@@ -137,7 +137,7 @@ async def refresh_instruments_from_kite(db: AsyncSession, kite_client) -> int:
         batch = instruments[i : i + BATCH_SIZE]
         rows = []
         for inst in batch:
-            expiry = inst.get("expiry")
+            expiry = inst.get("expiry") or None
             if expiry and not isinstance(expiry, date):
                 expiry = None
             # Kite returns some numeric fields as strings — cast them
