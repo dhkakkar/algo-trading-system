@@ -175,26 +175,30 @@ export default function ChartPage() {
         scaleMargins: { top: 0.8, bottom: 0 },
       });
 
-      // Transform data
-      const candleData = data.map((bar) => {
-        const dateStr = bar.time.slice(0, 10);
-        return {
-          time: dateStr,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-        };
-      });
+      // Transform data — daily uses date strings, intraday uses unix timestamps
+      const isDaily = interval === "1d";
 
-      const volumeData = data.map((bar) => {
-        const dateStr = bar.time.slice(0, 10);
-        return {
-          time: dateStr,
-          value: bar.volume,
-          color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-        };
-      });
+      const parseTime = (timeStr: string) => {
+        if (isDaily) {
+          return timeStr.slice(0, 10); // "YYYY-MM-DD"
+        }
+        // For intraday, convert to unix timestamp (seconds)
+        return Math.floor(new Date(timeStr).getTime() / 1000);
+      };
+
+      const candleData = data.map((bar) => ({
+        time: parseTime(bar.time),
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      }));
+
+      const volumeData = data.map((bar) => ({
+        time: parseTime(bar.time),
+        value: bar.volume,
+        color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      }));
 
       candleSeries.setData(candleData as any);
       volumeSeries.setData(volumeData as any);

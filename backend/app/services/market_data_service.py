@@ -65,23 +65,46 @@ async def store_ohlcv(
     instrument_token: int,
     interval: str,
 ) -> int:
-    """Store OHLCV records fetched from Kite. Returns count of records stored."""
+    """Store OHLCV records fetched from Kite. Uses upsert to handle duplicates."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    if not records:
+        return 0
+
+    BATCH_SIZE = 500
     count = 0
-    for record in records:
-        data = OHLCVData(
-            time=record["date"],
-            instrument_token=instrument_token,
-            tradingsymbol=symbol,
-            exchange=exchange,
-            open=record["open"],
-            high=record["high"],
-            low=record["low"],
-            close=record["close"],
-            volume=record["volume"],
-            interval=interval,
+
+    for i in range(0, len(records), BATCH_SIZE):
+        batch = records[i : i + BATCH_SIZE]
+        values = [
+            {
+                "time": r["date"],
+                "instrument_token": instrument_token,
+                "interval": interval,
+                "tradingsymbol": symbol,
+                "exchange": exchange,
+                "open": r["open"],
+                "high": r["high"],
+                "low": r["low"],
+                "close": r["close"],
+                "volume": r["volume"],
+            }
+            for r in batch
+        ]
+
+        stmt = insert(OHLCVData).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["time", "instrument_token", "interval"],
+            set_={
+                "open": stmt.excluded.open,
+                "high": stmt.excluded.high,
+                "low": stmt.excluded.low,
+                "close": stmt.excluded.close,
+                "volume": stmt.excluded.volume,
+            },
         )
-        db.add(data)
-        count += 1
+        await db.execute(stmt)
+        count += len(batch)
 
     await db.flush()
     return count
