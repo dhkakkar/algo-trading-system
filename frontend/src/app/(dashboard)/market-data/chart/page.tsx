@@ -65,10 +65,11 @@ export default function ChartPage() {
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (autoFetch = false) => {
     if (!symbol) return;
     setLoading(true);
     setError(null);
+    setFetchMsg(null);
     try {
       const res = await apiClient.get("/market-data/ohlcv", {
         params: {
@@ -79,9 +80,37 @@ export default function ChartPage() {
           interval,
         },
       });
-      setData(res.data);
-      if (res.data.length === 0) {
-        setError("No data available for the selected date range. Try fetching historical data first.");
+
+      if (res.data.length === 0 && autoFetch && user?.is_superadmin) {
+        // Auto-fetch from Kite when no data exists
+        setFetchMsg("No local data — fetching from Kite...");
+        try {
+          const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
+          const fetchRes = await apiClient.post("/admin/fetch-historical", {
+            symbol,
+            exchange,
+            from_date: fromDate,
+            to_date: toDate,
+            interval: kiteInterval,
+          });
+          setFetchMsg(`Fetched ${fetchRes.data.count} records from Kite`);
+          // Re-query the DB
+          const res2 = await apiClient.get("/market-data/ohlcv", {
+            params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
+          });
+          setData(res2.data);
+          if (res2.data.length === 0) {
+            setError("No data available even after fetching from Kite.");
+          }
+        } catch (fetchErr: any) {
+          setFetchMsg(fetchErr.response?.data?.detail || "Auto-fetch from Kite failed");
+          setError("No data available for this timeframe.");
+        }
+      } else {
+        setData(res.data);
+        if (res.data.length === 0) {
+          setError("No data available for the selected date range.");
+        }
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || "Failed to load chart data");
@@ -89,7 +118,7 @@ export default function ChartPage() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, exchange, fromDate, toDate, interval]);
+  }, [symbol, exchange, fromDate, toDate, interval, user?.is_superadmin]);
 
   const handleFetchFromKite = async () => {
     setFetching(true);
@@ -113,9 +142,9 @@ export default function ChartPage() {
     }
   };
 
-  // Fetch on mount and when params change
+  // Fetch on mount and when params change — auto-fetch from Kite if no local data
   useEffect(() => {
-    fetchData();
+    fetchData(true);
   }, [fetchData]);
 
   // Render chart
