@@ -139,7 +139,7 @@ export default function BacktestDetailPage() {
         lineWidth: 2,
       });
 
-      const data = bt.equity_curve.map((p) => ({
+      const data = (bt.equity_curve ?? []).map((p) => ({
         time: p.date as any,
         value: p.value,
       }));
@@ -198,7 +198,7 @@ export default function BacktestDetailPage() {
         invertFilledArea: true,
       });
 
-      const data = bt.drawdown_curve.map((p) => ({
+      const data = (bt.drawdown_curve ?? []).map((p) => ({
         time: p.date as any,
         value: -Math.abs(p.drawdown),
       }));

@@ -1,6 +1,6 @@
 """RestrictedPython configuration for sandboxed strategy execution."""
 
-from RestrictedPython import compile_restricted, safe_builtins
+from RestrictedPython import compile_restricted_exec, safe_builtins
 from RestrictedPython.Guards import safe_globals, guarded_iter_unpack_sequence
 from app.sandbox.allowed_modules import ALLOWED_MODULES, BLOCKED_BUILTINS
 import math
@@ -86,11 +86,7 @@ def compile_strategy_code(code: str) -> any:
 
     Returns compiled code object or raises SyntaxError/CompileError.
     """
-    result = compile_restricted(
-        code,
-        filename="<strategy>",
-        mode="exec",
-    )
+    result = compile_restricted_exec(code, filename="<strategy>")
 
     if result.errors:
         raise SyntaxError(f"Strategy compilation errors: {'; '.join(result.errors)}")
