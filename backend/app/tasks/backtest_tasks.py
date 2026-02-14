@@ -124,6 +124,22 @@ async def _run_backtest(backtest_id: str):
             # Metrics are nested under "metrics" key in the runner output
             metrics = results.get("metrics", {})
 
+            # Transform equity_curve: runner uses {timestamp, equity} -> frontend expects {date, value}
+            raw_equity = results.get("equity_curve") or []
+            equity_curve = []
+            for pt in raw_equity:
+                ts = pt.get("timestamp", "")
+                date_str = ts[:10] if isinstance(ts, str) and len(ts) >= 10 else str(ts)
+                equity_curve.append({"date": date_str, "value": pt.get("equity", 0)})
+
+            # Transform drawdown_curve: runner uses {timestamp, drawdown_percent} -> frontend expects {date, drawdown}
+            raw_drawdown = results.get("drawdown_curve") or []
+            drawdown_curve = []
+            for pt in raw_drawdown:
+                ts = pt.get("timestamp", "")
+                date_str = ts[:10] if isinstance(ts, str) and len(ts) >= 10 else str(ts)
+                drawdown_curve.append({"date": date_str, "drawdown": pt.get("drawdown_percent", 0)})
+
             # Store results
             await update_backtest_status(
                 db, backtest.id, "completed",
@@ -136,9 +152,45 @@ async def _run_backtest(backtest_id: str):
                 profit_factor=metrics.get("profit_factor"),
                 total_trades=metrics.get("total_trades"),
                 avg_trade_pnl=metrics.get("avg_trade_pnl"),
-                equity_curve=results.get("equity_curve"),
-                drawdown_curve=results.get("drawdown_curve"),
+                equity_curve=equity_curve,
+                drawdown_curve=drawdown_curve,
             )
+
+            # Save trades to Trade table
+            from app.models.trade import Trade as TradeModel
+            from dateutil.parser import parse as parse_dt
+
+            raw_trades = results.get("trades") or []
+            trade_records = []
+            for t in raw_trades:
+                entry_at = t.get("entry_at")
+                if isinstance(entry_at, str):
+                    entry_at = parse_dt(entry_at)
+                exit_at = t.get("exit_at")
+                if isinstance(exit_at, str):
+                    exit_at = parse_dt(exit_at)
+
+                trade_records.append(TradeModel(
+                    user_id=backtest.user_id,
+                    backtest_id=backtest.id,
+                    tradingsymbol=t.get("symbol", ""),
+                    exchange=t.get("exchange", "NSE"),
+                    side=t.get("side", "LONG"),
+                    quantity=int(t.get("quantity", 0)),
+                    entry_price=float(t.get("entry_price", 0)),
+                    exit_price=float(t.get("exit_price", 0)) if t.get("exit_price") is not None else None,
+                    pnl=float(t.get("pnl", 0)) if t.get("pnl") is not None else None,
+                    pnl_percent=float(t.get("pnl_percent", 0)) if t.get("pnl_percent") is not None else None,
+                    charges=float(t.get("charges", 0)),
+                    net_pnl=float(t.get("net_pnl", 0)) if t.get("net_pnl") is not None else None,
+                    mode="backtest",
+                    entry_at=entry_at,
+                    exit_at=exit_at,
+                    created_at=datetime.now(timezone.utc),
+                ))
+            if trade_records:
+                db.add_all(trade_records)
+
             await db.commit()
 
             # Emit completion via Socket.IO
