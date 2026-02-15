@@ -1179,10 +1179,19 @@ export default function BacktestDetailPage() {
                       </thead>
                       <tbody>
                         {(() => {
-                          let cumPnl = 0;
                           const totalTrades = trades.length;
-                          return trades.map((t, i) => {
-                            cumPnl += (t.net_pnl ?? 0);
+                          // Pre-compute cumulative P&L in chronological order
+                          const cumPnls: number[] = [];
+                          let running = 0;
+                          for (const t of trades) {
+                            running += (t.net_pnl ?? 0);
+                            cumPnls.push(running);
+                          }
+                          // Display in reverse (latest first)
+                          const reversed = [...trades].reverse();
+                          return reversed.map((t, i) => {
+                            const origIdx = totalTrades - 1 - i;
+                            const cumPnl = cumPnls[origIdx];
                             const tradeNum = totalTrades - i;
                             const isLong = t.side === "LONG" || t.side === "BUY";
                             const isOpen = t.exit_price == null;
