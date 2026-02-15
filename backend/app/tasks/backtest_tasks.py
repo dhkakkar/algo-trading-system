@@ -125,20 +125,19 @@ async def _run_backtest(backtest_id: str):
             metrics = results.get("metrics", {})
 
             # Transform equity_curve: runner uses {timestamp, equity} -> frontend expects {date, value}
+            # Keep full ISO timestamps so intraday timeframes (1h, 15m, etc.) render correctly
             raw_equity = results.get("equity_curve") or []
             equity_curve = []
             for pt in raw_equity:
                 ts = pt.get("timestamp", "")
-                date_str = ts[:10] if isinstance(ts, str) and len(ts) >= 10 else str(ts)
-                equity_curve.append({"date": date_str, "value": pt.get("equity", 0)})
+                equity_curve.append({"date": str(ts), "value": pt.get("equity", 0)})
 
             # Transform drawdown_curve: runner uses {timestamp, drawdown_percent} -> frontend expects {date, drawdown}
             raw_drawdown = results.get("drawdown_curve") or []
             drawdown_curve = []
             for pt in raw_drawdown:
                 ts = pt.get("timestamp", "")
-                date_str = ts[:10] if isinstance(ts, str) and len(ts) >= 10 else str(ts)
-                drawdown_curve.append({"date": date_str, "drawdown": pt.get("drawdown_percent", 0)})
+                drawdown_curve.append({"date": str(ts), "drawdown": pt.get("drawdown_percent", 0)})
 
             # Store results
             await update_backtest_status(

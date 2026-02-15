@@ -542,44 +542,90 @@ export default function BacktestDetailPage() {
     };
   }, [backtestId]);
 
+  // Helper: convert date strings to UNIX timestamps, deduplicate, sort
+  const prepareTimeseriesData = (
+    points: { date: string; value: number }[]
+  ) => {
+    const map = new Map<number, number>();
+    for (const p of points) {
+      const d = new Date(p.date);
+      if (isNaN(d.getTime())) continue;
+      const ts = Math.floor(d.getTime() / 1000);
+      map.set(ts, p.value); // last value wins for duplicates
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, value]) => ({ time: time as any, value }));
+  };
+
   // Render equity curve chart
   useEffect(() => {
     if (!bt?.equity_curve?.length || !equityChartRef.current) return;
 
     let cleanup: (() => void) | undefined;
 
-    import("lightweight-charts").then(({ createChart, ColorType }) => {
+    import("lightweight-charts").then(({ createChart, ColorType, CrosshairMode, LineStyle }) => {
       if (!equityChartRef.current) return;
       equityChartRef.current.innerHTML = "";
 
       const chart = createChart(equityChartRef.current, {
         width: equityChartRef.current.clientWidth,
-        height: 300,
+        height: 350,
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
           textColor: "#9ca3af",
+          fontFamily: "'Inter', sans-serif",
         },
         grid: {
-          vertLines: { color: "#1f2937" },
-          horzLines: { color: "#1f2937" },
+          vertLines: { color: "rgba(42,46,57,0.6)" },
+          horzLines: { color: "rgba(42,46,57,0.6)" },
         },
-        rightPriceScale: { borderColor: "#374151" },
-        timeScale: { borderColor: "#374151" },
+        rightPriceScale: {
+          borderColor: "#2a2e39",
+          autoScale: true,
+        },
+        timeScale: {
+          borderColor: "#2a2e39",
+          timeVisible: true,
+          secondsVisible: false,
+        },
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { color: "rgba(255,255,255,0.2)", width: 1, style: LineStyle.Dashed },
+          horzLine: { color: "rgba(255,255,255,0.2)", width: 1, style: LineStyle.Dashed },
+        },
       });
 
-      const series = chart.addAreaSeries({
-        lineColor: "#3b82f6",
-        topColor: "rgba(59,130,246,0.3)",
-        bottomColor: "rgba(59,130,246,0.02)",
+      // Equity curve series
+      const equitySeries = chart.addAreaSeries({
+        lineColor: "#2962ff",
+        topColor: "rgba(41,98,255,0.28)",
+        bottomColor: "rgba(41,98,255,0.02)",
         lineWidth: 2,
+        priceFormat: { type: "custom", formatter: (p: any) => "₹" + Number(p).toLocaleString("en-IN", { maximumFractionDigits: 0 }) },
       });
 
-      const data = (bt.equity_curve ?? []).map((p) => ({
-        time: p.date as any,
-        value: p.value,
-      }));
+      const data = prepareTimeseriesData(
+        bt.equity_curve!.map((p) => ({ date: p.date, value: p.value }))
+      );
+      equitySeries.setData(data);
 
-      series.setData(data);
+      // Initial capital reference line
+      if (data.length >= 2) {
+        const capitalLine = chart.addLineSeries({
+          color: "rgba(255,255,255,0.25)",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceFormat: { type: "custom", formatter: (p: any) => "₹" + Number(p).toLocaleString("en-IN", { maximumFractionDigits: 0 }) },
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+        });
+        capitalLine.setData([
+          { time: data[0].time, value: bt.initial_capital },
+          { time: data[data.length - 1].time, value: bt.initial_capital },
+        ]);
+      }
+
       chart.timeScale().fitContent();
 
       const handleResize = () => {
@@ -596,7 +642,7 @@ export default function BacktestDetailPage() {
     });
 
     return () => cleanup?.();
-  }, [bt?.equity_curve]);
+  }, [bt?.equity_curve, bt?.initial_capital]);
 
   // Render drawdown chart
   useEffect(() => {
@@ -604,38 +650,50 @@ export default function BacktestDetailPage() {
 
     let cleanup: (() => void) | undefined;
 
-    import("lightweight-charts").then(({ createChart, ColorType }) => {
+    import("lightweight-charts").then(({ createChart, ColorType, CrosshairMode, LineStyle }) => {
       if (!drawdownChartRef.current) return;
       drawdownChartRef.current.innerHTML = "";
 
       const chart = createChart(drawdownChartRef.current, {
         width: drawdownChartRef.current.clientWidth,
-        height: 200,
+        height: 220,
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
           textColor: "#9ca3af",
+          fontFamily: "'Inter', sans-serif",
         },
         grid: {
-          vertLines: { color: "#1f2937" },
-          horzLines: { color: "#1f2937" },
+          vertLines: { color: "rgba(42,46,57,0.6)" },
+          horzLines: { color: "rgba(42,46,57,0.6)" },
         },
-        rightPriceScale: { borderColor: "#374151" },
-        timeScale: { borderColor: "#374151" },
+        rightPriceScale: {
+          borderColor: "#2a2e39",
+          autoScale: true,
+        },
+        timeScale: {
+          borderColor: "#2a2e39",
+          timeVisible: true,
+          secondsVisible: false,
+        },
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { color: "rgba(255,255,255,0.2)", width: 1, style: LineStyle.Dashed },
+          horzLine: { color: "rgba(255,255,255,0.2)", width: 1, style: LineStyle.Dashed },
+        },
       });
 
       const series = chart.addAreaSeries({
         lineColor: "#ef4444",
         topColor: "rgba(239,68,68,0.02)",
-        bottomColor: "rgba(239,68,68,0.3)",
+        bottomColor: "rgba(239,68,68,0.28)",
         lineWidth: 2,
         invertFilledArea: true,
+        priceFormat: { type: "custom", formatter: (p: any) => Number(p).toFixed(2) + "%" },
       });
 
-      const data = (bt.drawdown_curve ?? []).map((p) => ({
-        time: p.date as any,
-        value: -Math.abs(p.drawdown),
-      }));
-
+      const data = prepareTimeseriesData(
+        bt.drawdown_curve!.map((p) => ({ date: p.date, value: -Math.abs(p.drawdown) }))
+      );
       series.setData(data);
       chart.timeScale().fitContent();
 
