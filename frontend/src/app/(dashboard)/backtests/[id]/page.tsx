@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useBacktestStore } from "@/stores/backtest-store";
 import { connectSocket } from "@/lib/socket-client";
@@ -601,84 +601,120 @@ export default function BacktestDetailPage() {
           )}
 
           {/* ============================================================ */}
-          {/* TRADES TAB — Trade log table */}
+          {/* TRADES TAB — TradingView-style grouped Entry/Exit rows */}
           {/* ============================================================ */}
           {activeTab === "trades" && (
             <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Trade Log</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <CardContent className="pt-4">
                 {trades.length === 0 ? (
                   <div className="h-32 flex items-center justify-center text-muted-foreground">
                     No trades recorded
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+                    <table className="w-full text-[13px]">
                       <thead>
-                        <tr className="border-b text-left">
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">#</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Symbol</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Side</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Qty</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Entry Price</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Exit Price</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">P&L</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">P&L %</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Charges</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Net P&L</th>
-                          <th className="pb-3 pr-3 font-medium text-muted-foreground">Entry Time</th>
-                          <th className="pb-3 font-medium text-muted-foreground">Exit Time</th>
+                        <tr className="border-b text-left text-xs text-muted-foreground">
+                          <th className="pb-2 pr-4 font-medium w-24">Trade #</th>
+                          <th className="pb-2 pr-4 font-medium w-16">Type</th>
+                          <th className="pb-2 pr-4 font-medium">Date and Time</th>
+                          <th className="pb-2 pr-4 font-medium">Signal</th>
+                          <th className="pb-2 pr-4 font-medium text-right">Price</th>
+                          <th className="pb-2 pr-4 font-medium text-right">Qty</th>
+                          <th className="pb-2 pr-4 font-medium text-right">Net P&L</th>
+                          <th className="pb-2 pr-4 font-medium text-right">Charges</th>
+                          <th className="pb-2 font-medium text-right">Cumulative P&L</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {trades.map((t, i) => (
-                          <tr
-                            key={i}
-                            className="border-b last:border-0 hover:bg-accent/50"
-                          >
-                            <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
-                            <td className="py-2 pr-3 font-medium">
-                              {t.exchange}:{t.symbol}
-                            </td>
-                            <td className="py-2 pr-3">
-                              <span
-                                className={cn(
-                                  "inline-flex px-2 py-0.5 rounded text-xs font-medium",
-                                  t.side === "LONG" || t.side === "BUY"
-                                    ? "bg-green-100 text-green-800"
-                                    : "bg-red-100 text-red-800"
-                                )}
-                              >
-                                {t.side}
-                              </span>
-                            </td>
-                            <td className="py-2 pr-3">{t.quantity}</td>
-                            <td className="py-2 pr-3">{formatCurrency(t.entry_price)}</td>
-                            <td className="py-2 pr-3">
-                              {t.exit_price != null ? formatCurrency(t.exit_price) : "Open"}
-                            </td>
-                            <td className={cn("py-2 pr-3", t.pnl != null ? (t.pnl >= 0 ? "text-green-500" : "text-red-500") : "")}>
-                              {t.pnl != null ? formatCurrency(t.pnl) : "—"}
-                            </td>
-                            <td className={cn("py-2 pr-3", t.pnl_percent != null ? (t.pnl_percent >= 0 ? "text-green-500" : "text-red-500") : "")}>
-                              {t.pnl_percent != null ? formatPercent(t.pnl_percent) : "—"}
-                            </td>
-                            <td className="py-2 pr-3 text-muted-foreground">
-                              {formatCurrency(t.charges)}
-                            </td>
-                            <td className={cn("py-2 pr-3 font-medium", t.net_pnl != null ? (t.net_pnl >= 0 ? "text-green-500" : "text-red-500") : "")}>
-                              {t.net_pnl != null ? formatCurrency(t.net_pnl) : "—"}
-                            </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">
-                              {t.entry_at ? new Date(t.entry_at).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" }) : "—"}
-                            </td>
-                            <td className="py-2 text-xs text-muted-foreground whitespace-nowrap">
-                              {t.exit_at ? new Date(t.exit_at).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" }) : "—"}
-                            </td>
-                          </tr>
-                        ))}
+                        {(() => {
+                          let cumPnl = 0;
+                          const totalTrades = trades.length;
+                          return trades.map((t, i) => {
+                            cumPnl += (t.net_pnl ?? 0);
+                            const tradeNum = totalTrades - i;
+                            const isLong = t.side === "LONG" || t.side === "BUY";
+                            const isOpen = t.exit_price == null;
+                            const cumPnlPct = bt.initial_capital > 0 ? (cumPnl / bt.initial_capital) * 100 : 0;
+
+                            return (
+                              <React.Fragment key={i}>
+                                {/* Exit row (top) */}
+                                <tr className="border-b border-border/30 hover:bg-accent/30">
+                                  {/* Trade # + Side — spans 2 rows */}
+                                  <td rowSpan={2} className="py-2 pr-4 align-top">
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-muted-foreground font-medium">{tradeNum}</span>
+                                      <span className={cn(
+                                        "text-xs font-semibold",
+                                        isLong ? "text-green-500" : "text-red-500"
+                                      )}>
+                                        {isLong ? "Long" : "Short"}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="py-2 pr-4 text-muted-foreground">Exit</td>
+                                  <td className="py-2 pr-4 whitespace-nowrap">
+                                    {isOpen
+                                      ? "—"
+                                      : t.exit_at
+                                      ? new Date(t.exit_at).toLocaleString("en-IN", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+                                      : "—"}
+                                  </td>
+                                  <td className="py-2 pr-4 text-muted-foreground">
+                                    {isOpen ? "Open" : isLong ? "short" : "long"}
+                                  </td>
+                                  <td className="py-2 pr-4 text-right">
+                                    {t.exit_price != null ? formatCurrency(t.exit_price) : "—"}
+                                  </td>
+                                  {/* Qty — spans 2 rows */}
+                                  <td rowSpan={2} className="py-2 pr-4 text-right align-middle">
+                                    {t.quantity}
+                                  </td>
+                                  {/* Net P&L — spans 2 rows */}
+                                  <td rowSpan={2} className="py-2 pr-4 text-right align-middle">
+                                    <div className={cn("font-medium", t.net_pnl != null ? (t.net_pnl >= 0 ? "text-green-500" : "text-red-500") : "")}>
+                                      {t.net_pnl != null ? formatCurrency(t.net_pnl) : "—"}
+                                    </div>
+                                    {t.pnl_percent != null && (
+                                      <div className={cn("text-xs", t.pnl_percent >= 0 ? "text-green-500" : "text-red-500")}>
+                                        {formatPercent(t.pnl_percent)}
+                                      </div>
+                                    )}
+                                  </td>
+                                  {/* Charges — spans 2 rows */}
+                                  <td rowSpan={2} className="py-2 pr-4 text-right align-middle text-muted-foreground">
+                                    {formatCurrency(t.charges)}
+                                  </td>
+                                  {/* Cumulative P&L — spans 2 rows */}
+                                  <td rowSpan={2} className="py-2 text-right align-middle">
+                                    <div className={cn("font-medium", cumPnl >= 0 ? "text-green-500" : "text-red-500")}>
+                                      {formatCurrency(cumPnl)}
+                                    </div>
+                                    <div className={cn("text-xs", cumPnlPct >= 0 ? "text-green-500" : "text-red-500")}>
+                                      {cumPnlPct >= 0 ? "+" : ""}{cumPnlPct.toFixed(2)}%
+                                    </div>
+                                  </td>
+                                </tr>
+                                {/* Entry row (bottom) */}
+                                <tr className={cn("hover:bg-accent/30", i < trades.length - 1 ? "border-b border-border" : "")}>
+                                  <td className="py-2 pr-4 text-muted-foreground">Entry</td>
+                                  <td className="py-2 pr-4 whitespace-nowrap">
+                                    {t.entry_at
+                                      ? new Date(t.entry_at).toLocaleString("en-IN", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+                                      : "—"}
+                                  </td>
+                                  <td className="py-2 pr-4 text-muted-foreground">
+                                    {isLong ? "long" : "short"}
+                                  </td>
+                                  <td className="py-2 pr-4 text-right">
+                                    {formatCurrency(t.entry_price)}
+                                  </td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          });
+                        })()}
                       </tbody>
                     </table>
                   </div>
