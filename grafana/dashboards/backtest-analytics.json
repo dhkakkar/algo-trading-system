@@ -1,0 +1,238 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Backtests",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Total\" FROM backtests;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "title": "Completed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Completed\" FROM backtests WHERE status = 'completed';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "title": "Failed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Failed\" FROM backtests WHERE status = 'failed';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "title": "Avg Sharpe Ratio",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(AVG(sharpe_ratio)::numeric, 2) AS \"Avg Sharpe\" FROM backtests WHERE status = 'completed' AND sharpe_ratio IS NOT NULL;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "title": "Backtest Results by Strategy",
+      "type": "table",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT s.name AS \"Strategy\", b.status AS \"Status\", b.start_date AS \"Start\", b.end_date AS \"End\", b.initial_capital AS \"Capital\", ROUND(b.total_return::numeric, 2) AS \"Return %\", ROUND(b.cagr::numeric, 2) AS \"CAGR %\", ROUND(b.sharpe_ratio::numeric, 2) AS \"Sharpe\", ROUND(b.sortino_ratio::numeric, 2) AS \"Sortino\", ROUND(b.max_drawdown::numeric, 2) AS \"Max DD %\", ROUND(b.win_rate::numeric, 1) AS \"Win Rate %\", b.total_trades AS \"Trades\", ROUND(b.profit_factor::numeric, 2) AS \"Profit Factor\", b.timeframe AS \"TF\", b.created_at AS \"Created\" FROM backtests b LEFT JOIN strategies s ON b.strategy_id = s.id ORDER BY b.created_at DESC LIMIT 100;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Return %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              {
+                "id": "thresholds",
+                "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "completed": { "text": "DONE", "color": "green" }, "failed": { "text": "FAIL", "color": "red" }, "pending": { "text": "PENDING", "color": "yellow" }, "running": { "text": "RUNNING", "color": "blue" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 6,
+      "title": "Sharpe Ratio Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT sharpe_ratio AS \"Sharpe Ratio\" FROM backtests WHERE status = 'completed' AND sharpe_ratio IS NOT NULL;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": { "bucketSize": 0.25, "combine": false }
+    },
+    {
+      "id": 7,
+      "title": "Max Drawdown Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT max_drawdown AS \"Max Drawdown %\" FROM backtests WHERE status = 'completed' AND max_drawdown IS NOT NULL;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "fixedColor": "red", "mode": "fixed" } },
+        "overrides": []
+      },
+      "options": { "bucketSize": 5, "combine": false }
+    },
+    {
+      "id": 8,
+      "title": "Backtests Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT DATE(created_at) AS time, COUNT(*) FILTER (WHERE status = 'completed') AS \"Completed\", COUNT(*) FILTER (WHERE status = 'failed') AS \"Failed\" FROM backtests GROUP BY DATE(created_at) ORDER BY time;",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Completed" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Failed" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list" } }
+    },
+    {
+      "id": 9,
+      "title": "Best Performing Strategies",
+      "type": "barchart",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [
+        {
+          "rawSql": "SELECT s.name AS \"Strategy\", ROUND(AVG(b.total_return)::numeric, 2) AS \"Avg Return %\", ROUND(AVG(b.sharpe_ratio)::numeric, 2) AS \"Avg Sharpe\", COUNT(*) AS \"Backtests\" FROM backtests b JOIN strategies s ON b.strategy_id = s.id WHERE b.status = 'completed' GROUP BY s.name HAVING COUNT(*) >= 1 ORDER BY \"Avg Sharpe\" DESC NULLS LAST LIMIT 15;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": { "xField": "Strategy", "orientation": "horizontal" }
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["backtesting"],
+  "templating": { "list": [] },
+  "time": { "from": "now-90d", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Kolkata",
+  "title": "Backtest Analytics",
+  "uid": "backtest-analytics",
+  "version": 1
+}

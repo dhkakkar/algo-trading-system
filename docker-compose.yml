@@ -91,6 +91,25 @@ services:
     networks:
       - algo-net
 
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-algotrade2024}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - algo-net
+
   nginx:
     image: nginx:alpine
     ports:
@@ -100,12 +119,14 @@ services:
     depends_on:
       - frontend
       - backend
+      - grafana
     networks:
       - algo-net
 
 volumes:
   postgres_data:
   redis_data:
+  grafana_data:
 
 networks:
   algo-net:
