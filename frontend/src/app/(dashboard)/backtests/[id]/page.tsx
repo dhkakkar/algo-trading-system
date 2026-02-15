@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   Loader2,
   AlertTriangle,
+  Download,
 } from "lucide-react";
 import type { BacktestTrade } from "@/types/backtest";
 
@@ -760,7 +761,29 @@ export default function BacktestDetailPage() {
             {bt.instruments?.join(", ")} · {bt.start_date} to {bt.end_date} · {bt.timeframe} · {formatCurrency(bt.initial_capital)} capital
           </p>
         </div>
-        <div>
+        <div className="flex items-center gap-3">
+          {bt.status === "completed" && (
+            <div className="relative group">
+              <button className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border bg-background hover:bg-accent transition-colors">
+                <Download className="h-4 w-4" />
+                Export
+              </button>
+              <div className="absolute right-0 top-full mt-1 w-48 rounded-md border bg-popover shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                <button
+                  onClick={() => exportTradesCSV(trades, bt.strategy_name || "backtest")}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent rounded-t-md"
+                >
+                  Trade Log (.csv)
+                </button>
+                <button
+                  onClick={() => exportSummaryCSV(bt, null)}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent rounded-b-md"
+                >
+                  Summary (.csv)
+                </button>
+              </div>
+            </div>
+          )}
           <StatusBadge status={bt.status} />
         </div>
       </div>
@@ -1291,6 +1314,69 @@ export default function BacktestDetailPage() {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CSV Export helpers
+// ---------------------------------------------------------------------------
+function exportTradesCSV(trades: BacktestTrade[], strategyName: string) {
+  const headers = [
+    "Trade #", "Side", "Symbol", "Exchange", "Quantity",
+    "Entry Date", "Entry Price", "Exit Date", "Exit Price",
+    "P&L", "P&L %", "Charges", "Net P&L",
+  ];
+  const rows = trades.map((t, i) => [
+    trades.length - i,
+    t.side,
+    t.symbol,
+    t.exchange,
+    t.quantity,
+    t.entry_at ? new Date(t.entry_at).toLocaleString("en-IN") : "",
+    t.entry_price,
+    t.exit_at ? new Date(t.exit_at).toLocaleString("en-IN") : "",
+    t.exit_price ?? "",
+    t.pnl ?? "",
+    t.pnl_percent != null ? `${t.pnl_percent.toFixed(2)}%` : "",
+    t.charges,
+    t.net_pnl ?? "",
+  ]);
+  const csv = [headers, ...rows].map((r) => r.map((c) => `"${c}"`).join(",")).join("\n");
+  downloadFile(csv, `${strategyName}-trades.csv`, "text/csv");
+}
+
+function exportSummaryCSV(bt: any, stats: any) {
+  const rows = [
+    ["Metric", "Value"],
+    ["Strategy", bt.strategy_name || ""],
+    ["Instruments", (bt.instruments || []).join(", ")],
+    ["Period", `${bt.start_date} to ${bt.end_date}`],
+    ["Timeframe", bt.timeframe],
+    ["Initial Capital", bt.initial_capital],
+    ["Net Profit", bt.total_return != null ? (bt.total_return * bt.initial_capital).toFixed(2) : ""],
+    ["Total Return %", bt.total_return != null ? (bt.total_return * 100).toFixed(2) + "%" : ""],
+    ["CAGR", bt.cagr != null ? (bt.cagr * 100).toFixed(2) + "%" : ""],
+    ["Sharpe Ratio", bt.sharpe_ratio?.toFixed(2) ?? ""],
+    ["Sortino Ratio", bt.sortino_ratio?.toFixed(2) ?? ""],
+    ["Max Drawdown", bt.max_drawdown != null ? (Math.abs(bt.max_drawdown) * 100).toFixed(2) + "%" : ""],
+    ["Total Trades", bt.total_trades ?? ""],
+    ["Win Rate", bt.win_rate != null ? (bt.win_rate * 100).toFixed(2) + "%" : ""],
+    ["Profit Factor", bt.profit_factor?.toFixed(2) ?? ""],
+    ["Avg Trade P&L", bt.avg_trade_pnl?.toFixed(2) ?? ""],
+  ];
+  const csv = rows.map((r) => r.map((c) => `"${c}"`).join(",")).join("\n");
+  downloadFile(csv, `${bt.strategy_name || "backtest"}-summary.csv`, "text/csv");
+}
+
+function downloadFile(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function KeyMetric({
   label,
   value,
