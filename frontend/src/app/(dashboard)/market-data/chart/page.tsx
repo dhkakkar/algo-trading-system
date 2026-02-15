@@ -2,7 +2,15 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Loader2,
+  Play,
+  Pause,
+  SkipForward,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +56,8 @@ const SCROLL_LOOKBACK: Record<string, number> = {
   "1d": 365,
 };
 
+const SPEED_OPTIONS = [1, 2, 5, 10, 25, 50];
+
 export default function ChartPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -82,16 +92,39 @@ export default function ChartPage() {
   const isScrollLoadRef = useRef(false);
   const loadOlderDataRef = useRef<() => Promise<void>>(undefined);
 
-  // Keep dataRef in sync with state
+  // Replay state
+  const [replayMode, setReplayMode] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replaySpeed, setReplaySpeed] = useState(1);
+  const replayIndexRef = useRef(0);
+  const replayTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const intervalRef = useRef(interval);
+
+  // Keep refs in sync
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    intervalRef.current = interval;
+  }, [interval]);
 
   // Reset scroll state when key params change
   useEffect(() => {
     earliestDateRef.current = fromDate;
     noMoreDataRef.current = false;
   }, [fromDate, interval, symbol]);
+
+  // Exit replay when params change
+  useEffect(() => {
+    if (replayMode) {
+      setReplayMode(false);
+      setIsPlaying(false);
+      if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval, fromDate, toDate]);
 
   const fetchData = useCallback(async () => {
     if (!symbol) return;
@@ -143,7 +176,7 @@ export default function ChartPage() {
 
   // Load older data when user scrolls past the left edge
   const loadOlderData = useCallback(async () => {
-    if (loadingOlderRef.current || noMoreDataRef.current || !symbol) return;
+    if (loadingOlderRef.current || noMoreDataRef.current || !symbol || replayMode) return;
     loadingOlderRef.current = true;
 
     const lookbackDays = SCROLL_LOOKBACK[interval] || 180;
@@ -199,12 +232,128 @@ export default function ChartPage() {
     } finally {
       loadingOlderRef.current = false;
     }
-  }, [symbol, exchange, interval, user?.is_superadmin]);
+  }, [symbol, exchange, interval, user?.is_superadmin, replayMode]);
 
   // Keep loadOlderData ref current for use in chart event handlers (avoids stale closures)
   useEffect(() => {
     loadOlderDataRef.current = loadOlderData;
   }, [loadOlderData]);
+
+  // --- Replay functions ---
+
+  // Update chart to show data up to a given index (uses refs, no stale closures)
+  const updateChartToIndex = useCallback((index: number) => {
+    if (!candleSeriesRef.current || !volumeSeriesRef.current || dataRef.current.length === 0) return;
+
+    const isDaily = intervalRef.current === "1d";
+    const parseTime = (timeStr: string) => {
+      if (isDaily) return timeStr.slice(0, 10);
+      return Math.floor(new Date(timeStr).getTime() / 1000);
+    };
+
+    const slice = dataRef.current.slice(0, index + 1);
+    const candleData = slice.map((bar) => ({
+      time: parseTime(bar.time),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+    }));
+    const volumeData = slice.map((bar) => ({
+      time: parseTime(bar.time),
+      value: bar.volume,
+      color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+    }));
+
+    candleSeriesRef.current.setData(candleData as any);
+    volumeSeriesRef.current.setData(volumeData as any);
+
+    if (chartRef.current) {
+      chartRef.current.timeScale().scrollToRealTime();
+    }
+  }, []);
+
+  const enterReplay = useCallback(() => {
+    if (dataRef.current.length === 0) return;
+    setReplayMode(true);
+    setIsPlaying(false);
+    setReplaySpeed(1);
+    setReplayIndex(0);
+    replayIndexRef.current = 0;
+    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    // Show just the first bar
+    updateChartToIndex(0);
+  }, [updateChartToIndex]);
+
+  const exitReplay = useCallback(() => {
+    setReplayMode(false);
+    setIsPlaying(false);
+    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    // Restore full data
+    if (candleSeriesRef.current && volumeSeriesRef.current && dataRef.current.length > 0) {
+      updateChartToIndex(dataRef.current.length - 1);
+      if (chartRef.current) chartRef.current.timeScale().fitContent();
+    }
+  }, [updateChartToIndex]);
+
+  const stepForward = useCallback(() => {
+    if (replayIndexRef.current >= dataRef.current.length - 1) return;
+    const next = replayIndexRef.current + 1;
+    replayIndexRef.current = next;
+    setReplayIndex(next);
+    updateChartToIndex(next);
+  }, [updateChartToIndex]);
+
+  const resetReplay = useCallback(() => {
+    setIsPlaying(false);
+    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    replayIndexRef.current = 0;
+    setReplayIndex(0);
+    updateChartToIndex(0);
+  }, [updateChartToIndex]);
+
+  const togglePlay = useCallback(() => {
+    if (isPlaying) {
+      setIsPlaying(false);
+      if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    } else {
+      // If at the end, reset to beginning
+      if (replayIndexRef.current >= dataRef.current.length - 1) {
+        replayIndexRef.current = 0;
+        setReplayIndex(0);
+        updateChartToIndex(0);
+      }
+      setIsPlaying(true);
+    }
+  }, [isPlaying, updateChartToIndex]);
+
+  const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const idx = parseInt(e.target.value);
+    replayIndexRef.current = idx;
+    setReplayIndex(idx);
+    updateChartToIndex(idx);
+  }, [updateChartToIndex]);
+
+  // Play timer
+  useEffect(() => {
+    if (!isPlaying || !replayMode) return;
+
+    const intervalMs = Math.max(500 / replaySpeed, 20);
+    const timer = window.setInterval(() => {
+      const next = replayIndexRef.current + 1;
+      if (next >= dataRef.current.length) {
+        setIsPlaying(false);
+        return;
+      }
+      replayIndexRef.current = next;
+      setReplayIndex(next);
+      updateChartToIndex(next);
+    }, intervalMs);
+
+    replayTimerRef.current = timer;
+
+    return () => clearInterval(timer);
+  }, [isPlaying, replayMode, replaySpeed, updateChartToIndex]);
 
   // Render chart
   useEffect(() => {
@@ -378,56 +527,161 @@ export default function ChartPage() {
               {exchange}:{symbol}
             </h1>
             <p className="text-muted-foreground text-sm">
-              OHLCV Chart
+              {replayMode ? "Replay Mode" : "OHLCV Chart"}
             </p>
           </div>
         </div>
+        {!replayMode && data.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={enterReplay}
+            className="text-purple-600 border-purple-500/50 hover:bg-purple-500/10"
+          >
+            <Play className="h-4 w-4 mr-2" />
+            Replay
+          </Button>
+        )}
       </div>
 
-      {/* Controls */}
-      <div className="flex items-center gap-4 flex-shrink-0 flex-wrap">
-        {/* Interval buttons */}
-        <div className="flex items-center gap-1">
-          {INTERVAL_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setInterval(opt.value)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                interval === opt.value
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:bg-muted/80"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+      {/* Controls — normal mode */}
+      {!replayMode && (
+        <div className="flex items-center gap-4 flex-shrink-0 flex-wrap">
+          {/* Interval buttons */}
+          <div className="flex items-center gap-1">
+            {INTERVAL_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setInterval(opt.value)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  interval === opt.value
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
 
-        <div className="flex items-center gap-2">
-          <Label htmlFor="from" className="text-sm whitespace-nowrap">From</Label>
-          <Input
-            id="from"
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="w-40 h-8 text-sm"
-          />
+          <div className="flex items-center gap-2">
+            <Label htmlFor="from" className="text-sm whitespace-nowrap">From</Label>
+            <Input
+              id="from"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-40 h-8 text-sm"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="to" className="text-sm whitespace-nowrap">To</Label>
+            <Input
+              id="to"
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-40 h-8 text-sm"
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor="to" className="text-sm whitespace-nowrap">To</Label>
-          <Input
-            id="to"
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className="w-40 h-8 text-sm"
-          />
-        </div>
+      )}
 
-      </div>
+      {/* Controls — replay mode */}
+      {replayMode && (
+        <div className="flex items-center gap-3 flex-shrink-0 flex-wrap rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+          {/* Play/Pause */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={togglePlay}
+          >
+            {isPlaying ? (
+              <Pause className="h-4 w-4" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+          </Button>
+
+          {/* Step forward */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={stepForward}
+            disabled={isPlaying || replayIndex >= data.length - 1}
+          >
+            <SkipForward className="h-4 w-4" />
+          </Button>
+
+          {/* Reset */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={resetReplay}
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-border" />
+
+          {/* Speed buttons */}
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-muted-foreground mr-1">Speed:</span>
+            {SPEED_OPTIONS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setReplaySpeed(s)}
+                className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                  replaySpeed === s
+                    ? "bg-purple-600 text-white"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-border" />
+
+          {/* Progress slider */}
+          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+            <input
+              type="range"
+              min={0}
+              max={Math.max(data.length - 1, 0)}
+              value={replayIndex}
+              onChange={handleSeek}
+              className="flex-1 h-1.5 accent-purple-600 cursor-pointer"
+            />
+            <span className="text-xs text-muted-foreground font-mono whitespace-nowrap">
+              {replayIndex + 1} / {data.length}
+            </span>
+          </div>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-border" />
+
+          {/* Exit replay */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={exitReplay}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5 mr-1" />
+            Exit Replay
+          </Button>
+        </div>
+      )}
 
       {/* Fetch status message */}
-      {fetchMsg && (
+      {fetchMsg && !replayMode && (
         <div className="text-sm text-muted-foreground flex-shrink-0">{fetchMsg}</div>
       )}
 
