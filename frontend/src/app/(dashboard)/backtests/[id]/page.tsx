@@ -29,22 +29,13 @@ function computeDetailedStats(trades: BacktestTrade[], initialCapital: number) {
   function analyze(list: BacktestTrade[]) {
     if (list.length === 0) {
       return {
-        total: 0,
-        winners: 0,
-        losers: 0,
-        winRate: 0,
-        grossProfit: 0,
-        grossLoss: 0,
-        netProfit: 0,
-        profitFactor: 0,
-        avgTrade: 0,
-        avgWin: 0,
-        avgLoss: 0,
-        largestWin: 0,
-        largestLoss: 0,
-        maxConsecWins: 0,
-        maxConsecLosses: 0,
-        totalCharges: 0,
+        total: 0, winners: 0, losers: 0, openTrades: 0, winRate: 0,
+        grossProfit: 0, grossLoss: 0, netProfit: 0, profitFactor: 0,
+        avgTrade: 0, avgWin: 0, avgLoss: 0,
+        largestWin: 0, largestLoss: 0,
+        maxConsecWins: 0, maxConsecLosses: 0, totalCharges: 0,
+        expectedPayoff: 0, ratioAvgWinLoss: 0,
+        largestWinPctOfGross: 0, largestLossPctOfGross: 0,
       };
     }
 
@@ -67,23 +58,36 @@ function computeDetailedStats(trades: BacktestTrade[], initialCapital: number) {
     const winPnls = wins.map((t) => t.net_pnl ?? 0);
     const lossPnls = losses.map((t) => t.net_pnl ?? 0);
 
+    const avgWin = winPnls.length > 0 ? grossProfit / winPnls.length : 0;
+    const avgLossVal = lossPnls.length > 0 ? -grossLoss / lossPnls.length : 0;
+    const winRateVal = list.length > 0 ? (wins.length / list.length) * 100 : 0;
+    const lWin = winPnls.length > 0 ? Math.max(...winPnls) : 0;
+    const lLoss = lossPnls.length > 0 ? Math.min(...lossPnls) : 0;
+
     return {
       total: list.length,
       winners: wins.length,
       losers: losses.length,
-      winRate: list.length > 0 ? (wins.length / list.length) * 100 : 0,
+      openTrades: list.filter((t) => t.exit_price == null).length,
+      winRate: winRateVal,
       grossProfit,
       grossLoss,
       netProfit,
       profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 9999 : 0,
       avgTrade: pnls.length > 0 ? netProfit / pnls.length : 0,
-      avgWin: winPnls.length > 0 ? grossProfit / winPnls.length : 0,
-      avgLoss: lossPnls.length > 0 ? -grossLoss / lossPnls.length : 0,
-      largestWin: winPnls.length > 0 ? Math.max(...winPnls) : 0,
-      largestLoss: lossPnls.length > 0 ? Math.min(...lossPnls) : 0,
+      avgWin,
+      avgLoss: avgLossVal,
+      largestWin: lWin,
+      largestLoss: lLoss,
       maxConsecWins: maxW,
       maxConsecLosses: maxL,
       totalCharges,
+      expectedPayoff: list.length > 0
+        ? (winRateVal / 100) * avgWin + ((100 - winRateVal) / 100) * avgLossVal
+        : 0,
+      ratioAvgWinLoss: avgLossVal !== 0 ? avgWin / Math.abs(avgLossVal) : 0,
+      largestWinPctOfGross: grossProfit > 0 ? (lWin / grossProfit) * 100 : 0,
+      largestLossPctOfGross: grossLoss > 0 ? (Math.abs(lLoss) / grossLoss) * 100 : 0,
     };
   }
 
@@ -95,43 +99,372 @@ function computeDetailedStats(trades: BacktestTrade[], initialCapital: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Stat row component (TradingView style)
+// Compute equity run-up / drawdown stats from equity curve
 // ---------------------------------------------------------------------------
-function StatRow({
+function computeEquityStats(
+  equityCurve: { date: string; value: number }[],
+  initialCapital: number
+) {
+  if (!equityCurve || equityCurve.length < 2) {
+    return {
+      maxRunUp: 0, maxRunUpPct: 0, avgRunUp: 0, avgRunUpPct: 0,
+      maxDrawdownAmt: 0, maxDrawdownPct: 0, avgDrawdownAmt: 0, avgDrawdownPct: 0,
+      maxRunUpDays: 0, avgRunUpDays: 0,
+      maxDrawdownDays: 0, avgDrawdownDays: 0,
+      maxRunUpPctOfCapital: 0, maxDrawdownPctOfCapital: 0,
+      returnOfMaxDrawdown: 0,
+    };
+  }
+
+  // Track drawdown periods
+  let peak = equityCurve[0].value;
+  let peakIdx = 0;
+  let trough = equityCurve[0].value;
+  let troughIdx = 0;
+
+  const drawdowns: { amount: number; pct: number; days: number }[] = [];
+  const runups: { amount: number; pct: number; days: number }[] = [];
+  let inDrawdown = false;
+
+  for (let i = 1; i < equityCurve.length; i++) {
+    const v = equityCurve[i].value;
+    if (v >= peak) {
+      if (inDrawdown && peak > 0) {
+        const ddAmt = peak - trough;
+        const ddPct = (ddAmt / peak) * 100;
+        const d0 = new Date(equityCurve[peakIdx].date);
+        const d1 = new Date(equityCurve[i].date);
+        const days = Math.max(1, Math.round((d1.getTime() - d0.getTime()) / 86400000));
+        drawdowns.push({ amount: ddAmt, pct: ddPct, days });
+      }
+      // Track run-up from last trough
+      if (trough < v) {
+        const ruAmt = v - trough;
+        const ruPct = trough > 0 ? (ruAmt / trough) * 100 : 0;
+        const d0 = new Date(equityCurve[troughIdx].date);
+        const d1 = new Date(equityCurve[i].date);
+        const days = Math.max(1, Math.round((d1.getTime() - d0.getTime()) / 86400000));
+        runups.push({ amount: ruAmt, pct: ruPct, days });
+      }
+      peak = v;
+      peakIdx = i;
+      trough = v;
+      troughIdx = i;
+      inDrawdown = false;
+    } else {
+      inDrawdown = true;
+      if (v < trough) {
+        trough = v;
+        troughIdx = i;
+      }
+    }
+  }
+  // Handle final drawdown if still in one
+  if (inDrawdown && peak > 0) {
+    const ddAmt = peak - trough;
+    const ddPct = (ddAmt / peak) * 100;
+    const d0 = new Date(equityCurve[peakIdx].date);
+    const d1 = new Date(equityCurve[equityCurve.length - 1].date);
+    const days = Math.max(1, Math.round((d1.getTime() - d0.getTime()) / 86400000));
+    drawdowns.push({ amount: ddAmt, pct: ddPct, days });
+  }
+
+  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+
+  const maxDD = drawdowns.length > 0 ? drawdowns.reduce((a, b) => a.amount > b.amount ? a : b) : null;
+  const maxRU = runups.length > 0 ? runups.reduce((a, b) => a.amount > b.amount ? a : b) : null;
+
+  return {
+    maxRunUp: maxRU?.amount ?? 0,
+    maxRunUpPct: maxRU?.pct ?? 0,
+    avgRunUp: avg(runups.map((r) => r.amount)),
+    avgRunUpPct: avg(runups.map((r) => r.pct)),
+    maxDrawdownAmt: maxDD?.amount ?? 0,
+    maxDrawdownPct: maxDD?.pct ?? 0,
+    avgDrawdownAmt: avg(drawdowns.map((d) => d.amount)),
+    avgDrawdownPct: avg(drawdowns.map((d) => d.pct)),
+    maxRunUpDays: maxRU?.days ?? 0,
+    avgRunUpDays: Math.round(avg(runups.map((r) => r.days))),
+    maxDrawdownDays: maxDD?.days ?? 0,
+    avgDrawdownDays: Math.round(avg(drawdowns.map((d) => d.days))),
+    maxRunUpPctOfCapital: initialCapital > 0 ? ((maxRU?.amount ?? 0) / initialCapital) * 100 : 0,
+    maxDrawdownPctOfCapital: initialCapital > 0 ? ((maxDD?.amount ?? 0) / initialCapital) * 100 : 0,
+    returnOfMaxDrawdown: maxDD && maxDD.amount > 0
+      ? ((equityCurve[equityCurve.length - 1].value - initialCapital) / maxDD.amount) * 100
+      : 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SVG Chart Components
+// ---------------------------------------------------------------------------
+
+/** Horizontal bar chart for Profit Structure */
+function ProfitStructureChart({
+  grossProfit,
+  grossLoss,
+  commission,
+  netPnl,
+}: {
+  grossProfit: number;
+  grossLoss: number;
+  commission: number;
+  netPnl: number;
+}) {
+  const items = [
+    { label: "Gross Profit", value: grossProfit, color: "#22c55e" },
+    { label: "Commission", value: -commission, color: "#6b7280" },
+    { label: "Gross Loss", value: -grossLoss, color: "#ef4444" },
+    { label: "Net P&L", value: netPnl, color: "#3b82f6" },
+  ];
+
+  const maxAbs = Math.max(...items.map((d) => Math.abs(d.value)), 1);
+  const barH = 28;
+  const gap = 12;
+  const labelW = 100;
+  const valueW = 90;
+  const chartW = 300;
+  const totalW = labelW + chartW + valueW;
+  const totalH = items.length * (barH + gap) - gap + 16;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${totalW} ${totalH}`} className="overflow-visible">
+      {items.map((item, i) => {
+        const y = i * (barH + gap) + 8;
+        const barWidth = (Math.abs(item.value) / maxAbs) * (chartW / 2);
+        const isPositive = item.value >= 0;
+        const barX = labelW + chartW / 2 + (isPositive ? 0 : -barWidth);
+
+        return (
+          <g key={i}>
+            <text x={labelW - 8} y={y + barH / 2 + 4} textAnchor="end" className="fill-muted-foreground" fontSize="12">
+              {item.label}
+            </text>
+            {/* Center line */}
+            <line x1={labelW + chartW / 2} y1={y} x2={labelW + chartW / 2} y2={y + barH} stroke="#374151" strokeWidth="1" />
+            <rect x={barX} y={y + 4} width={barWidth} height={barH - 8} rx="3" fill={item.color} opacity="0.85" />
+            <text x={labelW + chartW + 8} y={y + barH / 2 + 4} textAnchor="start" className="fill-foreground" fontSize="12" fontWeight="500">
+              {formatCurrency(item.value)}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/** Donut / Gauge chart */
+function DonutChart({
+  value,
+  maxVal,
+  label,
+  color,
+  formatFn,
+}: {
+  value: number;
+  maxVal: number;
+  label: string;
+  color: string;
+  formatFn?: (v: number) => string;
+}) {
+  const size = 100;
+  const stroke = 10;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const pct = maxVal > 0 ? Math.min(value / maxVal, 1) : 0;
+  const dashLen = pct * circumference;
+
+  return (
+    <div className="flex flex-col items-center">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          cx={size / 2} cy={size / 2} r={radius}
+          fill="none" stroke="#1f2937" strokeWidth={stroke}
+        />
+        <circle
+          cx={size / 2} cy={size / 2} r={radius}
+          fill="none" stroke={color} strokeWidth={stroke}
+          strokeDasharray={`${dashLen} ${circumference - dashLen}`}
+          strokeDashoffset={circumference / 4}
+          strokeLinecap="round"
+          className="transition-all duration-500"
+        />
+        <text x={size / 2} y={size / 2 + 5} textAnchor="middle" className="fill-foreground" fontSize="16" fontWeight="700">
+          {formatFn ? formatFn(value) : value.toFixed(2)}
+        </text>
+      </svg>
+      <span className="text-xs text-muted-foreground mt-1">{label}</span>
+    </div>
+  );
+}
+
+/** PnL Distribution Histogram */
+function PnLHistogram({ trades }: { trades: BacktestTrade[] }) {
+  const pnls = trades.map((t) => t.net_pnl ?? 0).filter((p) => p !== 0);
+  if (pnls.length === 0) {
+    return <div className="h-40 flex items-center justify-center text-muted-foreground text-sm">No trade data</div>;
+  }
+
+  const minPnl = Math.min(...pnls);
+  const maxPnl = Math.max(...pnls);
+  const range = maxPnl - minPnl || 1;
+  const bucketCount = Math.min(20, Math.max(5, Math.ceil(pnls.length / 3)));
+  const bucketSize = range / bucketCount;
+  const buckets: { min: number; max: number; count: number; isPositive: boolean }[] = [];
+
+  for (let i = 0; i < bucketCount; i++) {
+    const bMin = minPnl + i * bucketSize;
+    const bMax = bMin + bucketSize;
+    buckets.push({
+      min: bMin,
+      max: bMax,
+      count: pnls.filter((p) => p >= bMin && (i === bucketCount - 1 ? p <= bMax : p < bMax)).length,
+      isPositive: bMin + bucketSize / 2 >= 0,
+    });
+  }
+
+  const maxCount = Math.max(...buckets.map((b) => b.count), 1);
+  const chartH = 140;
+  const chartW = 400;
+  const barW = (chartW - 40) / bucketCount - 2;
+  const marginL = 30;
+  const marginB = 20;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${chartW} ${chartH + marginB}`} className="overflow-visible">
+      {/* Y axis */}
+      <line x1={marginL} y1={0} x2={marginL} y2={chartH} stroke="#374151" strokeWidth="1" />
+      {/* X axis */}
+      <line x1={marginL} y1={chartH} x2={chartW} y2={chartH} stroke="#374151" strokeWidth="1" />
+      {buckets.map((b, i) => {
+        const barH = (b.count / maxCount) * (chartH - 10);
+        const x = marginL + 4 + i * (barW + 2);
+        const y = chartH - barH;
+        return (
+          <g key={i}>
+            <rect
+              x={x} y={y} width={barW} height={barH} rx="2"
+              fill={b.isPositive ? "#22c55e" : "#ef4444"} opacity="0.8"
+            />
+            {b.count > 0 && (
+              <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="9" className="fill-muted-foreground">
+                {b.count}
+              </text>
+            )}
+          </g>
+        );
+      })}
+      {/* Labels */}
+      <text x={marginL + 4} y={chartH + 14} fontSize="9" className="fill-muted-foreground">
+        {formatCurrency(minPnl)}
+      </text>
+      <text x={chartW - 4} y={chartH + 14} textAnchor="end" fontSize="9" className="fill-muted-foreground">
+        {formatCurrency(maxPnl)}
+      </text>
+    </svg>
+  );
+}
+
+/** Win/Loss ratio donut */
+function WinLossDonut({ wins, losses }: { wins: number; losses: number }) {
+  const total = wins + losses;
+  if (total === 0) {
+    return <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">No trades</div>;
+  }
+  const winPct = wins / total;
+  const size = 120;
+  const stroke = 14;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const winDash = winPct * circumference;
+
+  return (
+    <div className="flex flex-col items-center">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {/* Loss portion (background) */}
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#ef4444" strokeWidth={stroke} />
+        {/* Win portion */}
+        <circle
+          cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#22c55e" strokeWidth={stroke}
+          strokeDasharray={`${winDash} ${circumference - winDash}`}
+          strokeDashoffset={circumference / 4}
+        />
+        <text x={size / 2} y={size / 2 - 4} textAnchor="middle" className="fill-foreground" fontSize="18" fontWeight="700">
+          {(winPct * 100).toFixed(1)}%
+        </text>
+        <text x={size / 2} y={size / 2 + 12} textAnchor="middle" className="fill-muted-foreground" fontSize="10">
+          Win Rate
+        </text>
+      </svg>
+      <div className="flex gap-4 mt-2 text-xs">
+        <span className="flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-green-500 inline-block" /> {wins} Wins
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" /> {losses} Losses
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Section header component */
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-6 pb-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
+      <div className="flex-1 h-px bg-border" />
+    </div>
+  );
+}
+
+/** Performance stat row with label and 3 columns */
+function PerfRow({
   label,
   all,
-  long,
-  short,
+  long: longVal,
+  short: shortVal,
   format = "number",
   colorize = false,
+  isSingle = false,
 }: {
   label: string;
-  all: number;
-  long: number;
-  short: number;
-  format?: "currency" | "percent" | "number" | "integer";
+  all: number | string;
+  long?: number | string;
+  short?: number | string;
+  format?: "currency" | "percent" | "number" | "integer" | "ratio";
   colorize?: boolean;
+  isSingle?: boolean;
 }) {
-  const fmt = (v: number) => {
+  const fmt = (v: number | string) => {
+    if (typeof v === "string") return v;
     if (format === "currency") return formatCurrency(v);
     if (format === "percent") return `${v.toFixed(2)}%`;
     if (format === "integer") return String(Math.round(v));
+    if (format === "ratio") return v.toFixed(2);
     return v.toFixed(2);
   };
 
-  const colorFor = (v: number) => {
-    if (!colorize) return "";
-    if (v > 0) return "text-green-500";
-    if (v < 0) return "text-red-500";
+  const colorFor = (v: number | string) => {
+    if (!colorize || typeof v === "string") return "";
+    const n = Number(v);
+    if (n > 0) return "text-green-500";
+    if (n < 0) return "text-red-500";
     return "";
   };
 
   return (
-    <div className="grid grid-cols-4 py-2 border-b border-border/50 text-sm">
+    <div className="grid grid-cols-4 py-1.5 text-[13px] border-b border-border/30 hover:bg-accent/20">
       <div className="text-muted-foreground">{label}</div>
       <div className={cn("text-right font-medium", colorFor(all))}>{fmt(all)}</div>
-      <div className={cn("text-right font-medium", colorFor(long))}>{fmt(long)}</div>
-      <div className={cn("text-right font-medium", colorFor(short))}>{fmt(short)}</div>
+      {isSingle ? (
+        <div className="col-span-2" />
+      ) : (
+        <>
+          <div className={cn("text-right font-medium", colorFor(longVal ?? 0))}>{fmt(longVal ?? 0)}</div>
+          <div className={cn("text-right font-medium", colorFor(shortVal ?? 0))}>{fmt(shortVal ?? 0)}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -165,6 +498,12 @@ export default function BacktestDetailPage() {
   const stats = useMemo(
     () => computeDetailedStats(trades, bt?.initial_capital ?? 100000),
     [trades, bt?.initial_capital]
+  );
+
+  // Compute equity curve run-up / drawdown stats
+  const eqStats = useMemo(
+    () => computeEquityStats(bt?.equity_curve ?? [], bt?.initial_capital ?? 100000),
+    [bt?.equity_curve, bt?.initial_capital]
   );
 
   useEffect(() => {
@@ -506,98 +845,252 @@ export default function BacktestDetailPage() {
           )}
 
           {/* ============================================================ */}
-          {/* PERFORMANCE TAB — TradingView-style detailed stats */}
+          {/* PERFORMANCE TAB — TradingView Strategy Report */}
           {/* ============================================================ */}
           {activeTab === "performance" && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Performance Summary</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {/* Column headers */}
-                <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  <div></div>
-                  <div className="text-right">All Trades</div>
-                  <div className="text-right">Long Trades</div>
-                  <div className="text-right">Short Trades</div>
-                </div>
+            <div className="space-y-1">
 
-                {/* Profit section */}
-                <div className="mt-1">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground py-2 border-b border-border">
-                    Profitability
-                  </div>
-                  <StatRow label="Net Profit" all={stats.all.netProfit} long={stats.long.netProfit} short={stats.short.netProfit} format="currency" colorize />
-                  <StatRow label="Gross Profit" all={stats.all.grossProfit} long={stats.long.grossProfit} short={stats.short.grossProfit} format="currency" colorize />
-                  <StatRow label="Gross Loss" all={-stats.all.grossLoss} long={-stats.long.grossLoss} short={-stats.short.grossLoss} format="currency" colorize />
-                  <StatRow label="Profit Factor" all={stats.all.profitFactor} long={stats.long.profitFactor} short={stats.short.profitFactor} />
-                  <StatRow label="Total Charges" all={stats.all.totalCharges} long={stats.long.totalCharges} short={stats.short.totalCharges} format="currency" />
-                </div>
+              {/* ─── PERFORMANCE ─── */}
+              <SectionHeader title="Performance" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Profit Structure */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Profit Structure</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ProfitStructureChart
+                      grossProfit={stats.all.grossProfit}
+                      grossLoss={stats.all.grossLoss}
+                      commission={stats.all.totalCharges}
+                      netPnl={stats.all.netProfit}
+                    />
+                  </CardContent>
+                </Card>
 
-                {/* Trade counts */}
-                <div className="mt-4">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground py-2 border-b border-border">
-                    Trades
-                  </div>
-                  <StatRow label="Total Trades" all={stats.all.total} long={stats.long.total} short={stats.short.total} format="integer" />
-                  <StatRow label="Winning Trades" all={stats.all.winners} long={stats.long.winners} short={stats.short.winners} format="integer" />
-                  <StatRow label="Losing Trades" all={stats.all.losers} long={stats.long.losers} short={stats.short.losers} format="integer" />
-                  <StatRow label="Win Rate" all={stats.all.winRate} long={stats.long.winRate} short={stats.short.winRate} format="percent" />
-                </div>
-
-                {/* Trade analysis */}
-                <div className="mt-4">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground py-2 border-b border-border">
-                    Trade Analysis
-                  </div>
-                  <StatRow label="Avg Trade" all={stats.all.avgTrade} long={stats.long.avgTrade} short={stats.short.avgTrade} format="currency" colorize />
-                  <StatRow label="Avg Winning Trade" all={stats.all.avgWin} long={stats.long.avgWin} short={stats.short.avgWin} format="currency" colorize />
-                  <StatRow label="Avg Losing Trade" all={stats.all.avgLoss} long={stats.long.avgLoss} short={stats.short.avgLoss} format="currency" colorize />
-                  <StatRow label="Largest Win" all={stats.all.largestWin} long={stats.long.largestWin} short={stats.short.largestWin} format="currency" colorize />
-                  <StatRow label="Largest Loss" all={stats.all.largestLoss} long={stats.long.largestLoss} short={stats.short.largestLoss} format="currency" colorize />
-                </div>
-
-                {/* Streaks */}
-                <div className="mt-4">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground py-2 border-b border-border">
-                    Streaks
-                  </div>
-                  <StatRow label="Max Consecutive Wins" all={stats.all.maxConsecWins} long={stats.long.maxConsecWins} short={stats.short.maxConsecWins} format="integer" />
-                  <StatRow label="Max Consecutive Losses" all={stats.all.maxConsecLosses} long={stats.long.maxConsecLosses} short={stats.short.maxConsecLosses} format="integer" />
-                </div>
-
-                {/* Risk metrics (from backend) */}
-                <div className="mt-4">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground py-2 border-b border-border">
-                    Risk Metrics
-                  </div>
-                  <div className="grid grid-cols-4 py-2 border-b border-border/50 text-sm">
-                    <div className="text-muted-foreground">Max Drawdown</div>
-                    <div className="text-right font-medium text-red-500 col-span-3">
-                      {bt.max_drawdown != null ? `${(Math.abs(bt.max_drawdown) * 100).toFixed(2)}%` : "—"}
+                {/* Benchmarking Donut Charts */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Benchmarking</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center justify-around py-2">
+                      <DonutChart
+                        value={stats.all.winRate}
+                        maxVal={100}
+                        label="% Profitable"
+                        color="#22c55e"
+                        formatFn={(v) => `${v.toFixed(1)}%`}
+                      />
+                      <DonutChart
+                        value={stats.all.ratioAvgWinLoss}
+                        maxVal={Math.max(stats.all.ratioAvgWinLoss * 1.5, 3)}
+                        label="Avg Win / Avg Loss"
+                        color="#3b82f6"
+                        formatFn={(v) => v.toFixed(2)}
+                      />
+                      <DonutChart
+                        value={bt.sharpe_ratio ?? 0}
+                        maxVal={Math.max(Math.abs(bt.sharpe_ratio ?? 0) * 2, 3)}
+                        label="Sharpe Ratio"
+                        color="#a855f7"
+                        formatFn={(v) => v.toFixed(2)}
+                      />
                     </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* ─── RETURNS ─── */}
+              <SectionHeader title="Returns" />
+              <Card>
+                <CardContent className="pt-4">
+                  {/* Column headers */}
+                  <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div></div>
+                    <div className="text-right">All Trades</div>
+                    <div className="text-right">Long Trades</div>
+                    <div className="text-right">Short Trades</div>
                   </div>
-                  <div className="grid grid-cols-4 py-2 border-b border-border/50 text-sm">
-                    <div className="text-muted-foreground">Sharpe Ratio</div>
-                    <div className="text-right font-medium col-span-3">
-                      {bt.sharpe_ratio?.toFixed(4) ?? "—"}
-                    </div>
+                  <PerfRow label="Initial Capital" all={bt.initial_capital} long={bt.initial_capital} short={bt.initial_capital} format="currency" />
+                  <PerfRow label="Net P&L" all={stats.all.netProfit} long={stats.long.netProfit} short={stats.short.netProfit} format="currency" colorize />
+                  <PerfRow
+                    label="Net P&L %"
+                    all={bt.initial_capital > 0 ? (stats.all.netProfit / bt.initial_capital) * 100 : 0}
+                    long={bt.initial_capital > 0 ? (stats.long.netProfit / bt.initial_capital) * 100 : 0}
+                    short={bt.initial_capital > 0 ? (stats.short.netProfit / bt.initial_capital) * 100 : 0}
+                    format="percent" colorize
+                  />
+                  <PerfRow label="Gross Profit" all={stats.all.grossProfit} long={stats.long.grossProfit} short={stats.short.grossProfit} format="currency" colorize />
+                  <PerfRow label="Gross Loss" all={-stats.all.grossLoss} long={-stats.long.grossLoss} short={-stats.short.grossLoss} format="currency" colorize />
+                  <PerfRow label="Profit Factor" all={stats.all.profitFactor} long={stats.long.profitFactor} short={stats.short.profitFactor} format="ratio" />
+                  <PerfRow label="Commission Paid" all={stats.all.totalCharges} long={stats.long.totalCharges} short={stats.short.totalCharges} format="currency" />
+                  <PerfRow label="Expected Payoff" all={stats.all.expectedPayoff} long={stats.long.expectedPayoff} short={stats.short.expectedPayoff} format="currency" colorize />
+                </CardContent>
+              </Card>
+
+              {/* ─── RISK-ADJUSTED PERFORMANCE ─── */}
+              <SectionHeader title="Risk-Adjusted Performance" />
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div></div>
+                    <div className="text-right">Value</div>
+                    <div className="text-right" />
+                    <div className="text-right" />
                   </div>
-                  <div className="grid grid-cols-4 py-2 border-b border-border/50 text-sm">
-                    <div className="text-muted-foreground">Sortino Ratio</div>
-                    <div className="text-right font-medium col-span-3">
-                      {bt.sortino_ratio?.toFixed(4) ?? "—"}
-                    </div>
+                  <PerfRow label="Sharpe Ratio" all={bt.sharpe_ratio ?? 0} format="ratio" isSingle />
+                  <PerfRow label="Sortino Ratio" all={bt.sortino_ratio ?? 0} format="ratio" isSingle />
+                  <PerfRow label="Max Drawdown %" all={bt.max_drawdown != null ? Math.abs(bt.max_drawdown) * 100 : 0} format="percent" isSingle />
+                  <PerfRow
+                    label="Max Drawdown Amount"
+                    all={eqStats.maxDrawdownAmt}
+                    format="currency"
+                    isSingle
+                  />
+                </CardContent>
+              </Card>
+
+              {/* ─── TRADES ANALYSIS ─── */}
+              <SectionHeader title="Trades Analysis" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* PnL Distribution */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">P&L Distribution</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <PnLHistogram trades={trades} />
+                  </CardContent>
+                </Card>
+
+                {/* Win/Loss Ratio */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Win / Loss Ratio</CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex items-center justify-center py-4">
+                    <WinLossDonut wins={stats.all.winners} losses={stats.all.losers} />
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Detailed trades table */}
+              <Card className="mt-4">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Details</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div></div>
+                    <div className="text-right">All Trades</div>
+                    <div className="text-right">Long Trades</div>
+                    <div className="text-right">Short Trades</div>
                   </div>
-                  <div className="grid grid-cols-4 py-2 border-b border-border/50 text-sm">
-                    <div className="text-muted-foreground">CAGR</div>
-                    <div className="text-right font-medium col-span-3">
-                      {bt.cagr != null ? formatPercent(bt.cagr * 100) : "—"}
-                    </div>
+                  <PerfRow label="Total Trades" all={stats.all.total} long={stats.long.total} short={stats.short.total} format="integer" />
+                  <PerfRow label="Total Open Trades" all={stats.all.openTrades} long={stats.long.openTrades} short={stats.short.openTrades} format="integer" />
+                  <PerfRow label="Winning Trades" all={stats.all.winners} long={stats.long.winners} short={stats.short.winners} format="integer" />
+                  <PerfRow label="Losing Trades" all={stats.all.losers} long={stats.long.losers} short={stats.short.losers} format="integer" />
+                  <PerfRow label="Percent Profitable" all={stats.all.winRate} long={stats.long.winRate} short={stats.short.winRate} format="percent" />
+                  <PerfRow label="Avg P&L" all={stats.all.avgTrade} long={stats.long.avgTrade} short={stats.short.avgTrade} format="currency" colorize />
+                  <PerfRow label="Avg Winning Trade" all={stats.all.avgWin} long={stats.long.avgWin} short={stats.short.avgWin} format="currency" colorize />
+                  <PerfRow label="Avg Losing Trade" all={stats.all.avgLoss} long={stats.long.avgLoss} short={stats.short.avgLoss} format="currency" colorize />
+                  <PerfRow label="Ratio Avg Win / Avg Loss" all={stats.all.ratioAvgWinLoss} long={stats.long.ratioAvgWinLoss} short={stats.short.ratioAvgWinLoss} format="ratio" />
+                  <PerfRow label="Largest Winning Trade" all={stats.all.largestWin} long={stats.long.largestWin} short={stats.short.largestWin} format="currency" colorize />
+                  <PerfRow label="Largest Losing Trade" all={stats.all.largestLoss} long={stats.long.largestLoss} short={stats.short.largestLoss} format="currency" colorize />
+                  <PerfRow
+                    label="Largest Winner % of Gross Profit"
+                    all={stats.all.largestWinPctOfGross}
+                    long={stats.long.largestWinPctOfGross}
+                    short={stats.short.largestWinPctOfGross}
+                    format="percent"
+                  />
+                  <PerfRow
+                    label="Largest Loser % of Gross Loss"
+                    all={stats.all.largestLossPctOfGross}
+                    long={stats.long.largestLossPctOfGross}
+                    short={stats.short.largestLossPctOfGross}
+                    format="percent"
+                  />
+                  <PerfRow label="Max Consecutive Wins" all={stats.all.maxConsecWins} long={stats.long.maxConsecWins} short={stats.short.maxConsecWins} format="integer" />
+                  <PerfRow label="Max Consecutive Losses" all={stats.all.maxConsecLosses} long={stats.long.maxConsecLosses} short={stats.short.maxConsecLosses} format="integer" />
+                </CardContent>
+              </Card>
+
+              {/* ─── CAPITAL EFFICIENCY ─── */}
+              <SectionHeader title="Capital Efficiency" />
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div></div>
+                    <div className="text-right">Value</div>
+                    <div className="text-right" />
+                    <div className="text-right" />
                   </div>
-                </div>
-              </CardContent>
-            </Card>
+                  <PerfRow
+                    label="Annualized Return (CAGR)"
+                    all={bt.cagr != null ? bt.cagr * 100 : 0}
+                    format="percent" colorize isSingle
+                  />
+                  <PerfRow
+                    label="Return on Initial Capital"
+                    all={bt.initial_capital > 0 ? (stats.all.netProfit / bt.initial_capital) * 100 : 0}
+                    format="percent" colorize isSingle
+                  />
+                  <PerfRow
+                    label="Account Size Required"
+                    all={bt.initial_capital + eqStats.maxDrawdownAmt}
+                    format="currency" isSingle
+                  />
+                  <PerfRow
+                    label="Net Profit as % of Largest Loss"
+                    all={stats.all.largestLoss !== 0 ? (stats.all.netProfit / Math.abs(stats.all.largestLoss)) * 100 : 0}
+                    format="percent" colorize isSingle
+                  />
+                </CardContent>
+              </Card>
+
+              {/* ─── RUN-UPS AND DRAWDOWNS ─── */}
+              <SectionHeader title="Run-ups and Drawdowns" />
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="grid grid-cols-4 py-2 border-b-2 border-border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div></div>
+                    <div className="text-right">Value</div>
+                    <div className="text-right" />
+                    <div className="text-right" />
+                  </div>
+                  <PerfRow label="Max Equity Run-up" all={eqStats.maxRunUp} format="currency" colorize isSingle />
+                  <PerfRow label="Max Equity Run-up %" all={eqStats.maxRunUpPct} format="percent" isSingle />
+                  <PerfRow label="Max Equity Run-up Duration" all={`${eqStats.maxRunUpDays} days`} isSingle />
+                  <PerfRow label="Avg Equity Run-up" all={eqStats.avgRunUp} format="currency" isSingle />
+                  <PerfRow label="Avg Equity Run-up Duration" all={`${eqStats.avgRunUpDays} days`} isSingle />
+                  <PerfRow
+                    label="Max Run-up as % of Capital"
+                    all={eqStats.maxRunUpPctOfCapital}
+                    format="percent" isSingle
+                  />
+
+                  <div className="h-3" />
+
+                  <PerfRow label="Max Equity Drawdown" all={-eqStats.maxDrawdownAmt} format="currency" colorize isSingle />
+                  <PerfRow label="Max Equity Drawdown %" all={-eqStats.maxDrawdownPct} format="percent" colorize isSingle />
+                  <PerfRow label="Max Equity Drawdown Duration" all={`${eqStats.maxDrawdownDays} days`} isSingle />
+                  <PerfRow label="Avg Equity Drawdown" all={-eqStats.avgDrawdownAmt} format="currency" colorize isSingle />
+                  <PerfRow label="Avg Equity Drawdown Duration" all={`${eqStats.avgDrawdownDays} days`} isSingle />
+                  <PerfRow
+                    label="Max Drawdown as % of Capital"
+                    all={-eqStats.maxDrawdownPctOfCapital}
+                    format="percent" colorize isSingle
+                  />
+                  <PerfRow
+                    label="Return / Max Drawdown"
+                    all={eqStats.returnOfMaxDrawdown}
+                    format="percent" colorize isSingle
+                  />
+                </CardContent>
+              </Card>
+            </div>
           )}
 
           {/* ============================================================ */}
