@@ -234,7 +234,7 @@ export default function NewStrategyPage() {
           {/* Editor / Upload area */}
           <div className="flex-1 min-h-0">
             {sourceTab === "editor" ? (
-              <StrategyEditor value={code} onChange={setCode} />
+              <StrategyEditor value={code} onChange={setCode} showTemplates />
             ) : (
               <div className="h-full flex flex-col">
                 <FileUpload onFileLoaded={handleFileLoaded} />
