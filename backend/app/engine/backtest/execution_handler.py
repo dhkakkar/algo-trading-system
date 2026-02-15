@@ -63,17 +63,25 @@ class SimulatedExecutionHandler:
               slippage.  Slightly optimistic but useful for daily strategies
               where the signal fires near the close and a Market-On-Close
               order is assumed.
+        commission_type: ``"zerodha"`` (default) for realistic Indian equity
+            charges, or ``"flat"`` for a fixed amount per order.
+        flat_commission: When ``commission_type="flat"``, the fixed charge
+            per order in INR.  Ignored for ``"zerodha"``.
     """
 
     def __init__(
         self,
         slippage_percent: float = 0.05,
         fill_at: str = "next_open",
+        commission_type: str = "zerodha",
+        flat_commission: float = 0.0,
     ) -> None:
         self.slippage_pct = slippage_percent / 100.0  # convert to fraction
         if fill_at not in ("next_open", "current_close"):
             raise ValueError(f"fill_at must be 'next_open' or 'current_close', got '{fill_at}'")
         self.fill_at = fill_at
+        self.commission_type = commission_type.lower()
+        self.flat_commission = flat_commission
 
     # ------------------------------------------------------------------
     # Public API
@@ -127,13 +135,17 @@ class SimulatedExecutionHandler:
         product: str,
     ) -> float:
         """
-        Calculate total transaction charges (Zerodha fee structure).
+        Calculate total transaction charges.
 
-        Includes brokerage, STT, exchange txn charges, GST, SEBI charges,
-        and stamp duty.
+        Uses flat commission if ``commission_type="flat"``, otherwise
+        Zerodha-style fee structure (brokerage, STT, exchange txn charges,
+        GST, SEBI charges, stamp duty).
 
         Returns the total charges in INR.
         """
+        if self.commission_type == "flat":
+            return round(self.flat_commission, 2)
+
         turnover = quantity * price
         is_buy = side.upper() == "BUY"
         is_intraday = product.upper() == "MIS"

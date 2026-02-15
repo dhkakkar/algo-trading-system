@@ -92,13 +92,20 @@ async def _run_backtest(backtest_id: str):
                 return
 
             # Run backtest
+            # Extract engine-level settings from parameters (if provided)
+            params = backtest.parameters or {}
             config = {
                 "start_date": backtest.start_date,
                 "end_date": backtest.end_date,
                 "initial_capital": float(backtest.initial_capital),
                 "timeframe": backtest.timeframe,
                 "instruments": backtest.instruments,
-                "parameters": backtest.parameters,
+                "parameters": params,
+                # Engine settings (passed alongside strategy params for convenience)
+                "slippage_percent": float(params.get("slippage_percent", 0.05)),
+                "commission_type": params.get("commission_type", "zerodha"),
+                "flat_commission": float(params.get("flat_commission", 0.0)),
+                "fill_at": params.get("fill_at", "next_open"),
             }
 
             # Progress callback for Socket.IO updates

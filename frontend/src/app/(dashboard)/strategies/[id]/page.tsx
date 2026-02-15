@@ -69,6 +69,9 @@ export default function EditStrategyPage() {
   const [btStartDate, setBtStartDate] = useState("2025-01-01");
   const [btEndDate, setBtEndDate] = useState("2025-12-31");
   const [btCapital, setBtCapital] = useState("100000");
+  const [btCommissionType, setBtCommissionType] = useState<"zerodha" | "flat">("zerodha");
+  const [btFlatCommission, setBtFlatCommission] = useState("0");
+  const [btSlippage, setBtSlippage] = useState("0.05");
 
   // Trading session state
   const [showTradingPanel, setShowTradingPanel] = useState<"paper" | "live" | null>(null);
@@ -207,6 +210,11 @@ export default function EditStrategyPage() {
         initial_capital: parseFloat(btCapital) || 100000,
         timeframe,
         instruments: instruments.length > 0 ? instruments : undefined,
+        parameters: {
+          commission_type: btCommissionType,
+          flat_commission: parseFloat(btFlatCommission) || 0,
+          slippage_percent: parseFloat(btSlippage) || 0,
+        },
       });
 
       router.push(`/backtests/${backtestId}`);
@@ -428,61 +436,104 @@ export default function EditStrategyPage() {
 
       {/* Backtest config panel */}
       {showBacktestPanel && (
-        <div className="flex items-center gap-4 rounded-lg border border-green-500/50 bg-green-500/10 p-4 flex-shrink-0">
-          <FlaskConical className="h-5 w-5 text-green-600 flex-shrink-0" />
-          <div className="flex items-center gap-3 flex-1 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Label htmlFor="bt-start" className="text-sm whitespace-nowrap">Start</Label>
-              <Input
-                id="bt-start"
-                type="date"
-                value={btStartDate}
-                onChange={(e) => setBtStartDate(e.target.value)}
-                className="w-40 h-8 text-sm"
-              />
+        <div className="rounded-lg border border-green-500/50 bg-green-500/10 p-4 flex-shrink-0 space-y-3">
+          <div className="flex items-center gap-4">
+            <FlaskConical className="h-5 w-5 text-green-600 flex-shrink-0" />
+            <div className="flex items-center gap-3 flex-1 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="bt-start" className="text-sm whitespace-nowrap">Start</Label>
+                <Input
+                  id="bt-start"
+                  type="date"
+                  value={btStartDate}
+                  onChange={(e) => setBtStartDate(e.target.value)}
+                  className="w-40 h-8 text-sm"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="bt-end" className="text-sm whitespace-nowrap">End</Label>
+                <Input
+                  id="bt-end"
+                  type="date"
+                  value={btEndDate}
+                  onChange={(e) => setBtEndDate(e.target.value)}
+                  className="w-40 h-8 text-sm"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="bt-capital" className="text-sm whitespace-nowrap">Capital</Label>
+                <Input
+                  id="bt-capital"
+                  type="number"
+                  value={btCapital}
+                  onChange={(e) => setBtCapital(e.target.value)}
+                  className="w-32 h-8 text-sm"
+                />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Label htmlFor="bt-end" className="text-sm whitespace-nowrap">End</Label>
-              <Input
-                id="bt-end"
-                type="date"
-                value={btEndDate}
-                onChange={(e) => setBtEndDate(e.target.value)}
-                className="w-40 h-8 text-sm"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Label htmlFor="bt-capital" className="text-sm whitespace-nowrap">Capital</Label>
-              <Input
-                id="bt-capital"
-                type="number"
-                value={btCapital}
-                onChange={(e) => setBtCapital(e.target.value)}
-                className="w-32 h-8 text-sm"
-              />
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowBacktestPanel(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleRunBacktest}
+                disabled={isRunningBacktest}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                {isRunningBacktest ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <FlaskConical className="h-4 w-4 mr-2" />
+                )}
+                Run
+              </Button>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowBacktestPanel(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleRunBacktest}
-              disabled={isRunningBacktest}
-              className="bg-green-600 hover:bg-green-700"
-            >
-              {isRunningBacktest ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <FlaskConical className="h-4 w-4 mr-2" />
-              )}
-              Run
-            </Button>
+          {/* Commission & Slippage row */}
+          <div className="flex items-center gap-3 pl-9 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bt-commission" className="text-sm whitespace-nowrap">Commission</Label>
+              <select
+                id="bt-commission"
+                value={btCommissionType}
+                onChange={(e) => setBtCommissionType(e.target.value as "zerodha" | "flat")}
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="zerodha">Zerodha (Realistic)</option>
+                <option value="flat">Flat per Order</option>
+              </select>
+            </div>
+            {btCommissionType === "flat" && (
+              <div className="flex items-center gap-2">
+                <Label htmlFor="bt-flat-comm" className="text-sm whitespace-nowrap">&#8377;/order</Label>
+                <Input
+                  id="bt-flat-comm"
+                  type="number"
+                  value={btFlatCommission}
+                  onChange={(e) => setBtFlatCommission(e.target.value)}
+                  className="w-24 h-8 text-sm"
+                  min="0"
+                  step="1"
+                />
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bt-slippage" className="text-sm whitespace-nowrap">Slippage %</Label>
+              <Input
+                id="bt-slippage"
+                type="number"
+                value={btSlippage}
+                onChange={(e) => setBtSlippage(e.target.value)}
+                className="w-24 h-8 text-sm"
+                min="0"
+                step="0.01"
+              />
+            </div>
           </div>
         </div>
       )}

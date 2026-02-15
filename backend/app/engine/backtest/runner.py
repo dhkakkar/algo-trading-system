@@ -349,6 +349,8 @@ class BacktestRunner(BaseRunner):
         self.execution_handler = SimulatedExecutionHandler(
             slippage_percent=config.get("slippage_percent", 0.05),
             fill_at=config.get("fill_at", "next_open"),
+            commission_type=config.get("commission_type", "zerodha"),
+            flat_commission=config.get("flat_commission", 0.0),
         )
         self.portfolio = Portfolio(float(config.get("initial_capital", 100000)))
 
