@@ -35,8 +35,8 @@ const EMA_CROSS_TEMPLATE = `class EMACrossStrategy(Strategy):
         fast_ema    — Fast EMA period (default: 2)
         slow_ema    — Slow EMA period (default: 5)
         direction   — "Both", "Long", or "Short" (default: "Both")
-        symbol      — Trading symbol (default: "NIFTY")
-        exchange    — Exchange segment (default: "NFO")
+        symbol      — Trading symbol (default: "NIFTY 50")
+        exchange    — Exchange segment (default: "NSE")
         quantity    — Order quantity / lot size (default: 25)
     """
 
@@ -44,10 +44,10 @@ const EMA_CROSS_TEMPLATE = `class EMACrossStrategy(Strategy):
         self.fast_period = ctx.get_param("fast_ema", 2)
         self.slow_period = ctx.get_param("slow_ema", 5)
         self.direction = ctx.get_param("direction", "Both")
-        self.symbol = ctx.get_param("symbol", "NIFTY")
-        self.exchange = ctx.get_param("exchange", "NFO")
+        self.symbol = ctx.get_param("symbol", "NIFTY 50")
+        self.exchange = ctx.get_param("exchange", "NSE")
         self.quantity = ctx.get_param("quantity", 25)
-        self.product = ctx.get_param("product", "NRML")
+        self.product = ctx.get_param("product", "CNC")
 
         self.long_ok = self.direction in ("Long", "Both")
         self.short_ok = self.direction in ("Short", "Both")
@@ -186,17 +186,17 @@ const SUPERTREND_TEMPLATE = `class SuperTrendStrategy(Strategy):
     Parameters:
         atr_period    — ATR period for SuperTrend (default: 10)
         multiplier    — ATR multiplier (default: 3.0)
-        symbol        — Trading symbol (default: "NIFTY")
+        symbol        — Trading symbol (default: "NIFTY 50")
         quantity      — Order quantity (default: 25)
     """
 
     def on_init(self, ctx):
         self.atr_period = ctx.get_param("atr_period", 10)
         self.multiplier = ctx.get_param("multiplier", 3.0)
-        self.symbol = ctx.get_param("symbol", "NIFTY")
-        self.exchange = ctx.get_param("exchange", "NFO")
+        self.symbol = ctx.get_param("symbol", "NIFTY 50")
+        self.exchange = ctx.get_param("exchange", "NSE")
         self.quantity = ctx.get_param("quantity", 25)
-        self.product = ctx.get_param("product", "NRML")
+        self.product = ctx.get_param("product", "CNC")
 
     def on_data(self, ctx):
         lookback = self.atr_period + 20
@@ -237,7 +237,7 @@ export const STRATEGY_TEMPLATES = [
   {
     id: "ema-cross",
     name: "EMA Cross Strategy",
-    description: "EMA crossover/crossunder with long/short reversal — optimized for NIFTY Futures",
+    description: "EMA crossover/crossunder with long/short reversal — NIFTY 50 index",
     code: EMA_CROSS_TEMPLATE,
   },
   {

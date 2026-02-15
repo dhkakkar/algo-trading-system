@@ -1,6 +1,6 @@
 import logging
 from datetime import date, datetime, timezone
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.market_data import OHLCVData
 from app.models.instrument import Instrument
@@ -13,7 +13,10 @@ async def search_instruments(
     db: AsyncSession, query: str, exchange: str | None = None
 ) -> list[Instrument]:
     stmt = select(Instrument).where(
-        Instrument.tradingsymbol.ilike(f"%{query}%")
+        or_(
+            Instrument.tradingsymbol.ilike(f"%{query}%"),
+            Instrument.name.ilike(f"%{query}%"),
+        )
     )
     if exchange:
         stmt = stmt.where(Instrument.exchange == exchange.upper())
