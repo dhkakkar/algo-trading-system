@@ -98,7 +98,7 @@ export default function ChartPage() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [replaySpeed, setReplaySpeed] = useState(1);
   const replayIndexRef = useRef(0);
-  const replayTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const replayTimerRef = useRef<number | null>(null);
   const intervalRef = useRef(interval);
 
   // Keep refs in sync
@@ -121,7 +121,7 @@ export default function ChartPage() {
     if (replayMode) {
       setReplayMode(false);
       setIsPlaying(false);
-      if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+      if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interval, fromDate, toDate]);
@@ -280,7 +280,7 @@ export default function ChartPage() {
     setReplaySpeed(1);
     setReplayIndex(0);
     replayIndexRef.current = 0;
-    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
     // Show just the first bar
     updateChartToIndex(0);
   }, [updateChartToIndex]);
@@ -288,7 +288,7 @@ export default function ChartPage() {
   const exitReplay = useCallback(() => {
     setReplayMode(false);
     setIsPlaying(false);
-    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
     // Restore full data
     if (candleSeriesRef.current && volumeSeriesRef.current && dataRef.current.length > 0) {
       updateChartToIndex(dataRef.current.length - 1);
@@ -306,7 +306,7 @@ export default function ChartPage() {
 
   const resetReplay = useCallback(() => {
     setIsPlaying(false);
-    if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
     replayIndexRef.current = 0;
     setReplayIndex(0);
     updateChartToIndex(0);
@@ -315,7 +315,7 @@ export default function ChartPage() {
   const togglePlay = useCallback(() => {
     if (isPlaying) {
       setIsPlaying(false);
-      if (replayTimerRef.current) clearInterval(replayTimerRef.current);
+      if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
     } else {
       // If at the end, reset to beginning
       if (replayIndexRef.current >= dataRef.current.length - 1) {
@@ -348,11 +348,11 @@ export default function ChartPage() {
       replayIndexRef.current = next;
       setReplayIndex(next);
       updateChartToIndex(next);
-    }, intervalMs);
+    }, intervalMs) as unknown as number;
 
     replayTimerRef.current = timer;
 
-    return () => clearInterval(timer);
+    return () => { clearInterval(timer); replayTimerRef.current = null; };
   }, [isPlaying, replayMode, replaySpeed, updateChartToIndex]);
 
   // Render chart
