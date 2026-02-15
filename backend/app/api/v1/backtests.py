@@ -43,8 +43,20 @@ async def get_backtest(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import select
+    from app.models.strategy import Strategy
+
     backtest = await backtest_service.get_backtest(db, backtest_id, current_user.id)
-    return backtest
+
+    # Fetch strategy name
+    result = await db.execute(
+        select(Strategy.name).where(Strategy.id == backtest.strategy_id)
+    )
+    strategy_name = result.scalar_one_or_none()
+
+    response = BacktestResponse.model_validate(backtest)
+    response.strategy_name = strategy_name
+    return response
 
 
 @router.delete("/{backtest_id}", status_code=204)

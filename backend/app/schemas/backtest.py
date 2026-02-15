@@ -29,6 +29,7 @@ class BacktestResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     strategy_id: uuid.UUID
+    strategy_name: str | None = None
     strategy_version: int
     status: str
     start_date: date
