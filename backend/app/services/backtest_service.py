@@ -1,7 +1,7 @@
 import uuid
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.backtest import Backtest
 from app.models.strategy import Strategy
@@ -102,5 +102,8 @@ async def update_backtest_status(
 async def delete_backtest(
     db: AsyncSession, backtest_id: uuid.UUID, user_id: uuid.UUID
 ) -> None:
+    from app.models.trade import Trade
     backtest = await get_backtest(db, backtest_id, user_id)
+    # Delete associated trades first (FK constraint)
+    await db.execute(sa_delete(Trade).where(Trade.backtest_id == backtest_id))
     await db.delete(backtest)
