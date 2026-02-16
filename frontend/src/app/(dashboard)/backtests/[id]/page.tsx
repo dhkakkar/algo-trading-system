@@ -512,7 +512,7 @@ export default function BacktestDetailPage() {
   const [indicators, setIndicators] = useState<IndicatorConfig>(() => {
     if (typeof window !== "undefined") {
       try {
-        const saved = localStorage.getItem("chart_indicators");
+        const saved = localStorage.getItem("backtest_chart_indicators");
         if (saved) return JSON.parse(saved);
       } catch {}
     }
@@ -771,7 +771,7 @@ export default function BacktestDetailPage() {
 
   // Persist indicator changes
   useEffect(() => {
-    localStorage.setItem("chart_indicators", JSON.stringify(indicators));
+    localStorage.setItem("backtest_chart_indicators", JSON.stringify(indicators));
   }, [indicators]);
 
   // Render trade signal chart
@@ -1592,24 +1592,24 @@ export default function BacktestDetailPage() {
                     (#1, #2...) link entry-exit pairs
                   </span>
                 </div>
-                <button
-                  onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
-                  className={cn(
-                    "p-1.5 rounded-md border transition-colors",
-                    showIndicatorPanel
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground border-border hover:text-foreground"
+                <div className="relative">
+                  <button
+                    onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+                    className={cn(
+                      "p-1.5 rounded-md border transition-colors",
+                      showIndicatorPanel
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-border hover:text-foreground"
+                    )}
+                    title="Indicators"
+                  >
+                    <Settings2 className="h-4 w-4" />
+                  </button>
+                  {showIndicatorPanel && (
+                    <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
                   )}
-                  title="Indicators"
-                >
-                  <Settings2 className="h-4 w-4" />
-                </button>
+                </div>
               </div>
-
-              {/* Indicator panel */}
-              {showIndicatorPanel && (
-                <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
-              )}
 
               <Card>
                 <CardContent className="pt-4">
