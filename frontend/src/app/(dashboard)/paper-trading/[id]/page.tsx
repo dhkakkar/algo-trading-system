@@ -109,7 +109,7 @@ const DEFAULT_INDICATORS: IndicatorConfig = {
 };
 
 interface CandleData {
-  time: number;
+  time: any; // number (unix ts) for intraday, string "YYYY-MM-DD" for daily
   open: number;
   high: number;
   low: number;
@@ -117,7 +117,7 @@ interface CandleData {
 }
 
 interface VolumeData {
-  time: number;
+  time: any; // matches CandleData.time
   value: number;
   color: string;
 }
@@ -456,14 +456,13 @@ function IndicatorPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: IST offset for lightweight-charts (displays UTC, we fake IST)
+// Time parsing — matches the working Market Data chart page
 // ---------------------------------------------------------------------------
-const IST_OFFSET_SECS = 5 * 3600 + 30 * 60; // +5:30 in seconds
-
-function toChartTime(isoOrTs: string | number): number {
-  const ms = typeof isoOrTs === "string" ? new Date(isoOrTs).getTime() : isoOrTs * 1000;
-  // lightweight-charts renders timestamps as UTC — shift by IST offset so labels read correctly
-  return Math.floor(ms / 1000) + IST_OFFSET_SECS;
+function toChartTime(timeStr: string, isDaily: boolean): string | number {
+  if (isDaily) {
+    return timeStr.slice(0, 10); // "YYYY-MM-DD" business day format
+  }
+  return Math.floor(new Date(timeStr).getTime() / 1000); // UTC unix timestamp
 }
 
 // ---------------------------------------------------------------------------
@@ -677,9 +676,9 @@ function LiveChart({
 
   // Process raw OHLCV API data into chart-ready arrays
   const processOHLCV = useCallback(
-    (data: any[]): { candles: CandleData[]; volumes: VolumeData[]; rawVolumes: number[] } => {
+    (data: any[], daily: boolean): { candles: CandleData[]; volumes: VolumeData[]; rawVolumes: number[] } => {
       const candleData: CandleData[] = data.map((d: any) => ({
-        time: toChartTime(d.time || d.timestamp),
+        time: toChartTime(d.time || d.timestamp, daily),
         open: d.open,
         high: d.high,
         low: d.low,
@@ -695,7 +694,7 @@ function LiveChart({
       }));
 
       // Deduplicate by time
-      const seen = new Set<number>();
+      const seen = new Set<any>();
       const candles: CandleData[] = [];
       const volumes: VolumeData[] = [];
       const rawVolumes: number[] = [];
@@ -753,7 +752,7 @@ function LiveChart({
       if (newData.length === 0) return;
 
       const { candles: newCandles, volumes: newVolumes, rawVolumes: newRawVolumes } =
-        processOHLCV(newData);
+        processOHLCV(newData, chartTimeframe === "1d");
 
       if (newCandles.length === 0) return;
 
@@ -785,7 +784,7 @@ function LiveChart({
       const allCandles = [...filteredCandles, ...existingCandles].sort((a, b) => a.time - b.time);
       const allRawVolumes = [...filteredRaw, ...existingVolumes];
       // Rebuild aligned volume array based on sorted candle order
-      const candleTimeToIdx = new Map<number, number>();
+      const candleTimeToIdx = new Map<any, number>();
       filteredCandles.forEach((c, i) => candleTimeToIdx.set(c.time, i));
       existingCandles.forEach((c, i) => candleTimeToIdx.set(c.time, filteredCandles.length + i));
       const mergedRawVolumes = allCandles.map((c) => {
@@ -852,7 +851,8 @@ function LiveChart({
         const isDaily = chartTimeframe === "1d";
 
         const chart = createChart(chartContainerRef.current, {
-          autoSize: true,
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
           layout: {
             background: { type: ColorType.Solid, color: "transparent" },
             textColor: "#9ca3af",
@@ -896,7 +896,7 @@ function LiveChart({
         // Transform OHLCV data
         const data = ohlcvRes.data || [];
         const { candles: uniqueCandles, volumes: uniqueVolumes, rawVolumes: sortedRawVolumes } =
-          processOHLCV(data);
+          processOHLCV(data, isDaily);
 
         candleSeries.setData(uniqueCandles as any[]);
         volumeSeries.setData(uniqueVolumes as any[]);
@@ -918,13 +918,27 @@ function LiveChart({
         // Lazy-load: fetch more history when user scrolls to left edge
         chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange: any) => {
           if (!logicalRange) return;
-          // When user scrolls so that the leftmost visible bar index is < 10, load more
           if (logicalRange.from < 10) {
             loadMoreHistory();
           }
         });
 
+        // Resize handler
+        const handleResize = () => {
+          if (chartContainerRef.current && chartRef.current) {
+            chartRef.current.applyOptions({
+              width: chartContainerRef.current.clientWidth,
+              height: chartContainerRef.current.clientHeight,
+            });
+          }
+        };
+        window.addEventListener("resize", handleResize);
+
         setChartLoading(false);
+
+        return () => {
+          window.removeEventListener("resize", handleResize);
+        };
       })
       .catch(() => {
         setChartLoading(false);
@@ -958,7 +972,7 @@ function LiveChart({
     const price = snapshot.prices[sym] || snapshot.prices[sym.toUpperCase()];
     if (!price) return;
 
-    const now = Math.floor(Date.now() / 1000) + IST_OFFSET_SECS;
+    const now = Math.floor(Date.now() / 1000);
     const lastCandle = lastCandleRef.current;
 
     // Determine candle interval in seconds
@@ -1054,13 +1068,13 @@ function LiveChart({
       </div>
 
       {/* Chart area */}
-      <div className="flex-1 relative min-h-0">
+      <div className="flex-1 min-h-0 relative">
         {chartLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         )}
-        <div ref={chartContainerRef} className="absolute inset-0" />
+        <div ref={chartContainerRef} className="w-full h-full min-h-[350px]" />
         {!isRunning && !chartLoading && (
           <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded z-10">
             Session not running — chart shows historical data only
@@ -1365,7 +1379,7 @@ export default function PaperTradingDetailPage() {
       {/* Main area: Chart + Data Panel */}
       <div className="flex gap-4 flex-1 min-h-0">
         {/* Chart (left) */}
-        <div className="flex-[2] min-w-0 border rounded-lg bg-card overflow-hidden">
+        <div className="flex-[2] min-w-0 border rounded-lg bg-card relative">
           <LiveChart
             instruments={session.instruments}
             sessionTimeframe={session.timeframe}
