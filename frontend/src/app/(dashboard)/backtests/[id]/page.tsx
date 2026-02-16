@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useBacktestStore } from "@/stores/backtest-store";
 import { connectSocket } from "@/lib/socket-client";
 import { formatCurrency, formatPercent, cn } from "@/lib/utils";
+import apiClient from "@/lib/api-client";
 import {
   Card,
   CardContent,
@@ -493,7 +494,12 @@ export default function BacktestDetailPage() {
 
   const equityChartRef = useRef<HTMLDivElement>(null);
   const drawdownChartRef = useRef<HTMLDivElement>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "performance" | "trades">("overview");
+  const tradeChartRef = useRef<HTMLDivElement>(null);
+  const tradeChartObjRef = useRef<any>(null);
+  const [activeTab, setActiveTab] = useState<"overview" | "performance" | "trades" | "chart">("overview");
+  const [chartSymbol, setChartSymbol] = useState<string>("");
+  const [chartOHLCV, setChartOHLCV] = useState<any[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
 
   // Compute detailed stats from trades
   const stats = useMemo(
@@ -714,6 +720,159 @@ export default function BacktestDetailPage() {
     return () => cleanup?.();
   }, [bt?.drawdown_curve]);
 
+  // Fetch OHLCV data when chart tab is active
+  useEffect(() => {
+    if (activeTab !== "chart" || !bt || bt.status !== "completed") return;
+    const sym = chartSymbol || bt.instruments?.[0] || "";
+    if (!sym) return;
+
+    setChartLoading(true);
+    apiClient
+      .get("/market-data/ohlcv", {
+        params: {
+          symbol: sym,
+          exchange: "NSE",
+          from_date: bt.start_date,
+          to_date: bt.end_date,
+          interval: bt.timeframe,
+        },
+      })
+      .then((res) => setChartOHLCV(res.data))
+      .catch(() => setChartOHLCV([]))
+      .finally(() => setChartLoading(false));
+  }, [activeTab, bt?.id, bt?.status, chartSymbol]);
+
+  // Render trade signal chart
+  useEffect(() => {
+    if (activeTab !== "chart" || !chartOHLCV.length || !tradeChartRef.current || !bt) return;
+
+    let cleanup: (() => void) | undefined;
+
+    import("lightweight-charts").then(({ createChart, ColorType }) => {
+      if (!tradeChartRef.current) return;
+      tradeChartRef.current.innerHTML = "";
+
+      const isDaily = bt.timeframe === "1d";
+
+      const parseTime = (timeStr: string) => {
+        if (isDaily) return timeStr.slice(0, 10);
+        return Math.floor(new Date(timeStr).getTime() / 1000) + 19800;
+      };
+
+      const chart = createChart(tradeChartRef.current, {
+        width: tradeChartRef.current.clientWidth,
+        height: 500,
+        layout: {
+          background: { type: ColorType.Solid, color: "transparent" },
+          textColor: "#9ca3af",
+          fontFamily: "'Inter', sans-serif",
+        },
+        grid: {
+          vertLines: { color: "rgba(42,46,57,0.6)" },
+          horzLines: { color: "rgba(42,46,57,0.6)" },
+        },
+        crosshair: { mode: 0 },
+        timeScale: {
+          borderColor: "#2a2e39",
+          timeVisible: !isDaily,
+          secondsVisible: false,
+        },
+        rightPriceScale: { borderColor: "#2a2e39" },
+      });
+
+      // Candlestick series
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderDownColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+      });
+
+      const candleData = chartOHLCV.map((bar: any) => ({
+        time: parseTime(bar.time),
+        open: Number(bar.open),
+        high: Number(bar.high),
+        low: Number(bar.low),
+        close: Number(bar.close),
+      }));
+      candleSeries.setData(candleData as any);
+
+      // Volume series
+      const volumeSeries = chart.addHistogramSeries({
+        priceFormat: { type: "volume" },
+        priceScaleId: "volume",
+      });
+      chart.priceScale("volume").applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+      });
+      volumeSeries.setData(
+        chartOHLCV.map((bar: any) => ({
+          time: parseTime(bar.time),
+          value: Number(bar.volume),
+          color: Number(bar.close) >= Number(bar.open)
+            ? "rgba(34,197,94,0.3)"
+            : "rgba(239,68,68,0.3)",
+        })) as any
+      );
+
+      // Trade entry/exit markers
+      const sym = chartSymbol || bt.instruments?.[0] || "";
+      const symbolTrades = trades.filter(
+        (t) => t.symbol.toUpperCase() === sym.toUpperCase()
+      );
+
+      const markers: any[] = [];
+      symbolTrades.forEach((t, i) => {
+        const isLong = t.side === "LONG" || t.side === "BUY";
+        const tradeNum = i + 1;
+
+        // Entry marker
+        markers.push({
+          time: parseTime(t.entry_at),
+          position: isLong ? "belowBar" : "aboveBar",
+          color: "#22c55e",
+          shape: isLong ? "arrowUp" : "arrowDown",
+          text: `#${tradeNum}`,
+        });
+
+        // Exit marker
+        if (t.exit_at) {
+          markers.push({
+            time: parseTime(t.exit_at),
+            position: isLong ? "aboveBar" : "belowBar",
+            color: "#ef4444",
+            shape: isLong ? "arrowDown" : "arrowUp",
+            text: `#${tradeNum}`,
+          });
+        }
+      });
+
+      // Markers must be sorted by time
+      markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+      candleSeries.setMarkers(markers);
+
+      chart.timeScale().fitContent();
+      tradeChartObjRef.current = chart;
+
+      const handleResize = () => {
+        if (tradeChartRef.current) {
+          chart.applyOptions({ width: tradeChartRef.current.clientWidth });
+        }
+      };
+      window.addEventListener("resize", handleResize);
+
+      cleanup = () => {
+        window.removeEventListener("resize", handleResize);
+        chart.remove();
+        tradeChartObjRef.current = null;
+      };
+    });
+
+    return () => cleanup?.();
+  }, [activeTab, chartOHLCV, trades, chartSymbol]);
+
   if (loading && !bt) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -861,7 +1020,7 @@ export default function BacktestDetailPage() {
           {/* Tab Navigation */}
           <div className="border-b">
             <nav className="flex space-x-8">
-              {(["overview", "performance", "trades"] as const).map((tab) => (
+              {(["overview", "performance", "trades", "chart"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -872,7 +1031,13 @@ export default function BacktestDetailPage() {
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {tab === "overview" ? "Overview" : tab === "performance" ? "Performance Summary" : `Trade Log (${trades.length})`}
+                  {tab === "overview"
+                    ? "Overview"
+                    : tab === "performance"
+                    ? "Performance Summary"
+                    : tab === "trades"
+                    ? `Trade Log (${trades.length})`
+                    : "Trade Chart"}
                 </button>
               ))}
             </nav>
@@ -1304,6 +1469,124 @@ export default function BacktestDetailPage() {
                 )}
               </CardContent>
             </Card>
+          )}
+
+          {/* ============================================================ */}
+          {/* CHART TAB — Candlestick chart with trade entry/exit markers */}
+          {/* ============================================================ */}
+          {activeTab === "chart" && (
+            <div className="space-y-4">
+              {/* Instrument selector (if multiple instruments) */}
+              {bt.instruments && bt.instruments.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Instrument:</span>
+                  {bt.instruments.map((sym) => (
+                    <button
+                      key={sym}
+                      onClick={() => setChartSymbol(sym)}
+                      className={cn(
+                        "px-3 py-1 text-sm rounded-md border transition-colors",
+                        (chartSymbol || bt.instruments[0]) === sym
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-border hover:text-foreground"
+                      )}
+                    >
+                      {sym}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Legend */}
+              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
+                  Entry
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
+                  Exit
+                </span>
+                <span className="text-muted-foreground/60">
+                  Numbers (#1, #2...) link matching entry-exit pairs
+                </span>
+              </div>
+
+              <Card>
+                <CardContent className="pt-4">
+                  {chartLoading ? (
+                    <div className="h-[500px] flex items-center justify-center">
+                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : chartOHLCV.length === 0 && !chartLoading ? (
+                    <div className="h-[500px] flex items-center justify-center text-muted-foreground">
+                      No OHLCV data available for {chartSymbol || bt.instruments?.[0] || "this instrument"}.
+                      Ensure market data has been fetched for this symbol and date range.
+                    </div>
+                  ) : (
+                    <div ref={tradeChartRef} />
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Trade summary below chart */}
+              {trades.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Trade Signals ({trades.filter((t) => t.symbol.toUpperCase() === (chartSymbol || bt.instruments?.[0] || "").toUpperCase()).length} trades)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[13px]">
+                        <thead>
+                          <tr className="border-b text-left text-xs text-muted-foreground">
+                            <th className="pb-2 pr-3 font-medium">#</th>
+                            <th className="pb-2 pr-3 font-medium">Side</th>
+                            <th className="pb-2 pr-3 font-medium">Entry Date</th>
+                            <th className="pb-2 pr-3 font-medium text-right">Entry Price</th>
+                            <th className="pb-2 pr-3 font-medium">Exit Date</th>
+                            <th className="pb-2 pr-3 font-medium text-right">Exit Price</th>
+                            <th className="pb-2 pr-3 font-medium text-right">Qty</th>
+                            <th className="pb-2 font-medium text-right">Net P&L</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {trades
+                            .filter((t) => t.symbol.toUpperCase() === (chartSymbol || bt.instruments?.[0] || "").toUpperCase())
+                            .map((t, i) => {
+                              const isLong = t.side === "LONG" || t.side === "BUY";
+                              return (
+                                <tr key={i} className="border-b border-border/30 hover:bg-accent/30">
+                                  <td className="py-1.5 pr-3 text-muted-foreground">{i + 1}</td>
+                                  <td className={cn("py-1.5 pr-3 font-medium", isLong ? "text-green-500" : "text-red-500")}>
+                                    {isLong ? "Long" : "Short"}
+                                  </td>
+                                  <td className="py-1.5 pr-3 whitespace-nowrap">
+                                    {new Date(t.entry_at).toLocaleString("en-IN", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
+                                  </td>
+                                  <td className="py-1.5 pr-3 text-right">{formatCurrency(t.entry_price)}</td>
+                                  <td className="py-1.5 pr-3 whitespace-nowrap">
+                                    {t.exit_at
+                                      ? new Date(t.exit_at).toLocaleString("en-IN", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+                                      : "Open"}
+                                  </td>
+                                  <td className="py-1.5 pr-3 text-right">{t.exit_price != null ? formatCurrency(t.exit_price) : "—"}</td>
+                                  <td className="py-1.5 pr-3 text-right">{t.quantity}</td>
+                                  <td className={cn("py-1.5 text-right font-medium", t.net_pnl != null ? (t.net_pnl >= 0 ? "text-green-500" : "text-red-500") : "")}>
+                                    {t.net_pnl != null ? formatCurrency(t.net_pnl) : "—"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           )}
         </>
       )}
