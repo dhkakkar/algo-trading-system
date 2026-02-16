@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { RefreshCw, CheckCircle2, XCircle } from "lucide-react";
+import { RefreshCw, CheckCircle2, XCircle, Eye, EyeOff } from "lucide-react";
 
 interface BrokerStatus {
   connected: boolean;
@@ -40,6 +40,7 @@ export default function SettingsPage() {
   const [brokerSaving, setBrokerSaving] = useState(false);
   const [brokerMessage, setBrokerMessage] = useState("");
   const [requestToken, setRequestToken] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<boolean | null>(null);
 
@@ -263,13 +264,23 @@ export default function SettingsPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="apiSecret">API Secret</Label>
-                <Input
-                  id="apiSecret"
-                  type="password"
-                  value={apiSecret}
-                  onChange={(e) => setApiSecret(e.target.value)}
-                  placeholder="Your Kite Connect API Secret"
-                />
+                <div className="relative">
+                  <Input
+                    id="apiSecret"
+                    type={showSecret ? "text" : "password"}
+                    value={apiSecret}
+                    onChange={(e) => setApiSecret(e.target.value)}
+                    placeholder="Your Kite Connect API Secret"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret(!showSecret)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               <Button onClick={handleBrokerConnect} disabled={brokerSaving || !apiKey || !apiSecret}>
                 {brokerSaving ? "Saving..." : "Save & Get Login URL"}

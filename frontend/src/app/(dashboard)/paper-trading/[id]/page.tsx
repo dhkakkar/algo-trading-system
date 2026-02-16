@@ -827,7 +827,7 @@ function LiveChart({
 
   // Load historical candles and create chart
   useEffect(() => {
-    if (!sym || !chartContainerRef.current) return;
+    if (!sym || !chartContainerRef.current || brokerConnected === false) return;
 
     setChartLoading(true);
     setChartError(null);
@@ -963,7 +963,7 @@ function LiveChart({
         chartRef.current = null;
       }
     };
-  }, [sym, exch, chartTimeframe]);
+  }, [sym, exch, chartTimeframe, brokerConnected]);
 
   // Re-apply indicators when config changes (without re-fetching data)
   useEffect(() => {
