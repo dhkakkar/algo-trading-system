@@ -149,7 +149,7 @@ class NiftyEMACPRStrategy(Strategy):
 
         # Track bars for swing invalidation
         if self.bullish_trigger or self.bearish_trigger:
-            self.bars_since_trigger += 1
+            self.bars_since_trigger = self.bars_since_trigger + 1
             self.recent_highs.append(cur_high)
             self.recent_lows.append(cur_low)
 

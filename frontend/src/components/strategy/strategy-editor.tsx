@@ -323,7 +323,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
         bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < bc
 
         if self.bullish_trigger or self.bearish_trigger:
-            self.bars_since_trigger += 1
+            self.bars_since_trigger = self.bars_since_trigger + 1
             self.recent_highs.append(cur_high)
             self.recent_lows.append(cur_low)
 
