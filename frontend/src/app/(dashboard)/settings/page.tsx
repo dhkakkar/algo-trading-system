@@ -301,6 +301,22 @@ export default function SettingsPage() {
               <p className="text-sm text-muted-foreground">
                 API Key: {brokerStatus.api_key}
               </p>
+              {brokerStatus.token_expiry && (
+                <p className="text-sm text-muted-foreground">
+                  Token Expires:{" "}
+                  <span className="font-medium text-foreground">
+                    {new Date(brokerStatus.token_expiry).toLocaleString("en-IN", {
+                      timeZone: "Asia/Kolkata",
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: true,
+                    })}
+                  </span>
+                </p>
+              )}
               <Button variant="destructive" onClick={handleBrokerDisconnect}>
                 Disconnect
               </Button>

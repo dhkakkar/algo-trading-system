@@ -41,7 +41,7 @@ export function Topbar({ onMenuClick }: TopbarProps) {
   // Fetch broker status on mount
   useEffect(() => {
     apiClient
-      .get("/broker/status")
+      .get("/broker/status", { _suppressToast: true } as any)
       .then((res) => setBrokerStatus(res.data))
       .catch(() => setBrokerStatus({ connected: false, token_valid: false, token_expiry: null, login_url: null, api_key: null }));
   }, []);
@@ -101,6 +101,11 @@ export function Topbar({ onMenuClick }: TopbarProps) {
             <span className="flex items-center gap-1 text-green-500">
               <Wifi className="h-3.5 w-3.5" />
               <span className="hidden md:inline">Kite Connected</span>
+              {brokerStatus?.token_expiry && (
+                <span className="hidden lg:inline text-muted-foreground ml-0.5">
+                  (expires {new Date(brokerStatus.token_expiry).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "numeric", month: "short" })})
+                </span>
+              )}
             </span>
           )}
           {isTokenExpired && (

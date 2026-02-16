@@ -119,7 +119,9 @@ export const useTradingStore = create<TradingState>((set, get) => ({
 
   fetchSnapshot: async (id: string) => {
     try {
-      const res = await apiClient.get(`/trading/sessions/${id}/snapshot`);
+      const res = await apiClient.get(`/trading/sessions/${id}/snapshot`, {
+        _suppressToast: true,
+      } as any);
       set({ snapshot: res.data, snapshotError: null });
     } catch (err: any) {
       const detail = err.response?.data?.detail;

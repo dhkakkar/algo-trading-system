@@ -37,19 +37,26 @@ async def disconnect(sid):
 @sio.on("subscribe_backtest")
 async def subscribe_backtest(sid, data):
     """Subscribe to backtest progress updates."""
-    backtest_id = data.get("backtest_id")
-    if backtest_id:
-        room = f"backtest_{backtest_id}"
-        sio.enter_room(sid, room)
-        logger.info(f"Client {sid} subscribed to backtest {backtest_id}")
+    try:
+        backtest_id = data.get("backtest_id")
+        if backtest_id:
+            room = f"backtest_{backtest_id}"
+            sio.enter_room(sid, room)
+            logger.info(f"Client {sid} subscribed to backtest {backtest_id}")
+    except Exception as e:
+        logger.error(f"Error in subscribe_backtest for {sid}: {e}", exc_info=True)
+        await sio.emit("error", {"message": "Failed to subscribe to backtest updates"}, room=sid)
 
 
 @sio.on("unsubscribe_backtest")
 async def unsubscribe_backtest(sid, data):
-    backtest_id = data.get("backtest_id")
-    if backtest_id:
-        room = f"backtest_{backtest_id}"
-        sio.leave_room(sid, room)
+    try:
+        backtest_id = data.get("backtest_id")
+        if backtest_id:
+            room = f"backtest_{backtest_id}"
+            sio.leave_room(sid, room)
+    except Exception as e:
+        logger.error(f"Error in unsubscribe_backtest for {sid}: {e}", exc_info=True)
 
 
 # ── Trading namespace ──
@@ -57,90 +64,122 @@ async def unsubscribe_backtest(sid, data):
 @sio.on("subscribe_trading")
 async def subscribe_trading(sid, data):
     """Subscribe to trading session updates for a user."""
-    user_id = data.get("user_id")
-    if user_id:
-        room = f"user_{user_id}"
-        sio.enter_room(sid, room)
-        logger.info(f"Client {sid} subscribed to trading updates for user {user_id}")
+    try:
+        user_id = data.get("user_id")
+        if user_id:
+            room = f"user_{user_id}"
+            sio.enter_room(sid, room)
+            logger.info(f"Client {sid} subscribed to trading updates for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in subscribe_trading for {sid}: {e}", exc_info=True)
+        await sio.emit("error", {"message": "Failed to subscribe to trading updates"}, room=sid)
 
 
 @sio.on("unsubscribe_trading")
 async def unsubscribe_trading(sid, data):
-    user_id = data.get("user_id")
-    if user_id:
-        room = f"user_{user_id}"
-        sio.leave_room(sid, room)
+    try:
+        user_id = data.get("user_id")
+        if user_id:
+            room = f"user_{user_id}"
+            sio.leave_room(sid, room)
+    except Exception as e:
+        logger.error(f"Error in unsubscribe_trading for {sid}: {e}", exc_info=True)
 
 
 @sio.on("subscribe_session")
 async def subscribe_session(sid, data):
     """Subscribe to a specific trading session's updates."""
-    session_id = data.get("session_id")
-    if session_id:
-        room = f"session_{session_id}"
-        sio.enter_room(sid, room)
-        logger.info(f"Client {sid} subscribed to session {session_id}")
+    try:
+        session_id = data.get("session_id")
+        if session_id:
+            room = f"session_{session_id}"
+            sio.enter_room(sid, room)
+            logger.info(f"Client {sid} subscribed to session {session_id}")
+    except Exception as e:
+        logger.error(f"Error in subscribe_session for {sid}: {e}", exc_info=True)
+        await sio.emit("error", {"message": "Failed to subscribe to session updates"}, room=sid)
 
 
 @sio.on("unsubscribe_session")
 async def unsubscribe_session(sid, data):
-    session_id = data.get("session_id")
-    if session_id:
-        room = f"session_{session_id}"
-        sio.leave_room(sid, room)
+    try:
+        session_id = data.get("session_id")
+        if session_id:
+            room = f"session_{session_id}"
+            sio.leave_room(sid, room)
+    except Exception as e:
+        logger.error(f"Error in unsubscribe_session for {sid}: {e}", exc_info=True)
 
 
 # ── Helper functions for emitting events ──
 
 async def emit_backtest_progress(backtest_id: str, percent: float, current_date: str):
     """Emit backtest progress to subscribed clients."""
-    await sio.emit(
-        "backtest_progress",
-        {"backtest_id": backtest_id, "percent": percent, "current_date": current_date},
-        room=f"backtest_{backtest_id}",
-    )
+    try:
+        await sio.emit(
+            "backtest_progress",
+            {"backtest_id": backtest_id, "percent": percent, "current_date": current_date},
+            room=f"backtest_{backtest_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting backtest_progress for {backtest_id}: {e}", exc_info=True)
 
 
 async def emit_backtest_completed(backtest_id: str, summary: dict):
     """Emit backtest completion to subscribed clients."""
-    await sio.emit(
-        "backtest_completed",
-        {"backtest_id": backtest_id, "status": "completed", "summary": summary},
-        room=f"backtest_{backtest_id}",
-    )
+    try:
+        await sio.emit(
+            "backtest_completed",
+            {"backtest_id": backtest_id, "status": "completed", "summary": summary},
+            room=f"backtest_{backtest_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting backtest_completed for {backtest_id}: {e}", exc_info=True)
 
 
 async def emit_backtest_error(backtest_id: str, error: str):
     """Emit backtest error to subscribed clients."""
-    await sio.emit(
-        "backtest_error",
-        {"backtest_id": backtest_id, "status": "failed", "error": error},
-        room=f"backtest_{backtest_id}",
-    )
+    try:
+        await sio.emit(
+            "backtest_error",
+            {"backtest_id": backtest_id, "status": "failed", "error": error},
+            room=f"backtest_{backtest_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting backtest_error for {backtest_id}: {e}", exc_info=True)
 
 
 async def emit_trading_update(user_id: str, event_type: str, data: dict):
     """Emit trading updates (positions, orders, P&L) to a specific user."""
-    await sio.emit(
-        event_type,
-        data,
-        room=f"user_{user_id}",
-    )
+    try:
+        await sio.emit(
+            event_type,
+            data,
+            room=f"user_{user_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting {event_type} for user {user_id}: {e}", exc_info=True)
 
 
 async def emit_session_update(session_id: str, data: dict):
     """Emit trading session snapshot to clients watching a specific session."""
-    await sio.emit(
-        "session_update",
-        data,
-        room=f"session_{session_id}",
-    )
+    try:
+        await sio.emit(
+            "session_update",
+            data,
+            room=f"session_{session_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting session_update for {session_id}: {e}", exc_info=True)
 
 
 async def emit_order_update(user_id: str, order_data: dict):
     """Emit order fill/status change to user."""
-    await sio.emit(
-        "order_update",
-        order_data,
-        room=f"user_{user_id}",
-    )
+    try:
+        await sio.emit(
+            "order_update",
+            order_data,
+            room=f"user_{user_id}",
+        )
+    except Exception as e:
+        logger.error(f"Error emitting order_update for user {user_id}: {e}", exc_info=True)

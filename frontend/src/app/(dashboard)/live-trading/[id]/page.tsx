@@ -130,7 +130,7 @@ export default function LiveTradingDetailPage() {
   // Check broker status on mount
   useEffect(() => {
     apiClient
-      .get("/broker/status")
+      .get("/broker/status", { _suppressToast: true } as any)
       .then((res) => setBrokerStatus(res.data))
       .catch(() => setBrokerStatus({ connected: false }));
   }, []);

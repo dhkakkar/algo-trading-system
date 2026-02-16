@@ -38,35 +38,32 @@ export default function DashboardPage() {
 
   useEffect(() => {
     async function loadStats() {
-      try {
-        const [strategiesRes, backtestsRes, sessionsRes] = await Promise.allSettled([
-          apiClient.get("/strategies"),
-          apiClient.get("/backtests"),
-          apiClient.get("/trading/sessions"),
-        ]);
+      const [strategiesRes, backtestsRes, sessionsRes] = await Promise.allSettled([
+        apiClient.get("/strategies"),
+        apiClient.get("/backtests"),
+        apiClient.get("/trading/sessions"),
+      ]);
 
-        const strategies =
-          strategiesRes.status === "fulfilled" ? strategiesRes.value.data : [];
-        const backtests =
-          backtestsRes.status === "fulfilled" ? backtestsRes.value.data : [];
-        const sessions =
-          sessionsRes.status === "fulfilled" ? sessionsRes.value.data : [];
+      // Each rejected promise already triggers a toast via the global API interceptor
+      const strategies =
+        strategiesRes.status === "fulfilled" ? strategiesRes.value.data : [];
+      const backtests =
+        backtestsRes.status === "fulfilled" ? backtestsRes.value.data : [];
+      const sessions =
+        sessionsRes.status === "fulfilled" ? sessionsRes.value.data : [];
 
-        setStats({
-          strategies: strategies.length,
-          backtests: backtests.length,
-          paperSessions: sessions.filter((s: any) => s.mode === "paper").length,
-          liveSessions: sessions.filter((s: any) => s.mode === "live").length,
-          runningPaper: sessions.filter(
-            (s: any) => s.mode === "paper" && s.status === "running"
-          ).length,
-          runningLive: sessions.filter(
-            (s: any) => s.mode === "live" && s.status === "running"
-          ).length,
-        });
-      } catch {
-        // silently ignore
-      }
+      setStats({
+        strategies: strategies.length,
+        backtests: backtests.length,
+        paperSessions: sessions.filter((s: any) => s.mode === "paper").length,
+        liveSessions: sessions.filter((s: any) => s.mode === "live").length,
+        runningPaper: sessions.filter(
+          (s: any) => s.mode === "paper" && s.status === "running"
+        ).length,
+        runningLive: sessions.filter(
+          (s: any) => s.mode === "live" && s.status === "running"
+        ).length,
+      });
     }
     loadStats();
   }, []);

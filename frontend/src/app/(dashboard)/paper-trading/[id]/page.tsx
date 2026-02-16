@@ -29,6 +29,7 @@ import {
   X,
   AlertTriangle,
   ExternalLink,
+  WifiOff,
 } from "lucide-react";
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
@@ -476,11 +477,13 @@ function LiveChart({
   sessionTimeframe,
   snapshot,
   isRunning,
+  brokerConnected,
 }: {
   instruments: string[];
   sessionTimeframe: string;
   snapshot: TradingSnapshot | null;
   isRunning: boolean;
+  brokerConnected: boolean | null; // null = still loading
 }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
@@ -749,7 +752,8 @@ function LiveChart({
       if (fromDate >= toDate) return;
 
       const res = await apiClient.get(
-        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${chartTimeframe}`
+        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${chartTimeframe}`,
+        { _suppressToast: true } as any
       );
 
       const newData = res.data || [];
@@ -1053,10 +1057,33 @@ function LiveChart({
     }
   }, [snapshot, sym, chartTimeframe]);
 
+  // Determine if broker token is invalid
+  const isBrokerInvalid = brokerConnected === false;
+
+  if (isBrokerInvalid) {
+    return (
+      <div className="relative h-full min-h-[400px] flex flex-col items-center justify-center bg-card text-center px-6 rounded-lg">
+        <WifiOff className="h-12 w-12 text-yellow-500 mb-4" />
+        <h3 className="text-lg font-semibold text-foreground mb-1">
+          API Token Invalid
+        </h3>
+        <p className="text-sm text-muted-foreground max-w-sm mb-4">
+          Your Kite API token is missing or expired. Re-authenticate in Settings to load live chart data.
+        </p>
+        <a
+          href="/settings"
+          className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+        >
+          Go to Settings <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
+    );
+  }
+
   return (
     <div className="relative h-full min-h-[400px] flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b bg-card/50 flex-shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b bg-card flex-shrink-0">
         {/* Timeframe selector */}
         <div className="flex items-center gap-0.5">
           {TIMEFRAMES.map((tf) => (
@@ -1175,6 +1202,7 @@ export default function PaperTradingDetailPage() {
   // Broker status
   const [brokerStatus, setBrokerStatus] = useState<{
     connected: boolean;
+    token_valid?: boolean;
     token_expiry?: string | null;
     login_url?: string | null;
   } | null>(null);
@@ -1191,7 +1219,7 @@ export default function PaperTradingDetailPage() {
   // Check broker status on mount
   useEffect(() => {
     apiClient
-      .get("/broker/status")
+      .get("/broker/status", { _suppressToast: true } as any)
       .then((res) => setBrokerStatus(res.data))
       .catch(() => setBrokerStatus({ connected: false }));
   }, []);
@@ -1510,6 +1538,7 @@ export default function PaperTradingDetailPage() {
             sessionTimeframe={session.timeframe}
             snapshot={snapshot}
             isRunning={isRunning}
+            brokerConnected={brokerStatus === null ? null : (brokerStatus.connected && brokerStatus.token_valid !== false)}
           />
         </div>
 
