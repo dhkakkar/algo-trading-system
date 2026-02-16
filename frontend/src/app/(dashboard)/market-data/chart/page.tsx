@@ -239,6 +239,62 @@ export default function ChartPage() {
     loadOlderDataRef.current = loadOlderData;
   }, [loadOlderData]);
 
+  // Live polling: fetch latest candle every 5s for intraday intervals
+  useEffect(() => {
+    // Only poll for intraday intervals, when not in replay mode, and when we have a chart
+    if (interval === "1d" || replayMode || !symbol) return;
+
+    const pollLatest = async () => {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const res = await apiClient.get("/market-data/ohlcv", {
+          params: { symbol, exchange, from_date: today, to_date: today, interval },
+          _suppressToast: true,
+        } as any);
+        const bars: OHLCVBar[] = res.data || [];
+        if (bars.length === 0 || !candleSeriesRef.current || !volumeSeriesRef.current) return;
+
+        // Get the latest bar from the API
+        const latestBar = bars[bars.length - 1];
+        const ts = Math.floor(new Date(latestBar.time).getTime() / 1000);
+
+        // Update the last candle (or add new one) in-place
+        candleSeriesRef.current.update({
+          time: ts,
+          open: latestBar.open,
+          high: latestBar.high,
+          low: latestBar.low,
+          close: latestBar.close,
+        });
+        volumeSeriesRef.current.update({
+          time: ts,
+          value: latestBar.volume,
+          color: latestBar.close >= latestBar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+        });
+
+        // Also update the data array so replay/scroll don't lose it
+        const existing = dataRef.current;
+        if (existing.length > 0) {
+          const lastTime = existing[existing.length - 1].time;
+          const latestTime = latestBar.time;
+          if (lastTime === latestTime) {
+            existing[existing.length - 1] = latestBar;
+          } else if (new Date(latestTime) > new Date(lastTime)) {
+            existing.push(latestBar);
+          }
+        }
+      } catch {
+        // Silently ignore polling errors
+      }
+    };
+
+    const timer = window.setInterval(pollLatest, 5000);
+    // Also run once immediately
+    pollLatest();
+
+    return () => clearInterval(timer);
+  }, [symbol, exchange, interval, replayMode]);
+
   // --- Replay functions ---
 
   // Update chart to show data up to a given index (uses refs, no stale closures)
@@ -526,8 +582,17 @@ export default function ChartPage() {
             <h1 className="text-2xl font-bold tracking-tight">
               {exchange}:{symbol}
             </h1>
-            <p className="text-muted-foreground text-sm">
+            <p className="text-muted-foreground text-sm flex items-center gap-2">
               {replayMode ? "Replay Mode" : "OHLCV Chart"}
+              {!replayMode && interval !== "1d" && data.length > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs text-green-500">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                  </span>
+                  Live
+                </span>
+              )}
             </p>
           </div>
         </div>
