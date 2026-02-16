@@ -24,6 +24,9 @@ import {
   TrendingUp,
   TrendingDown,
   BarChart3,
+  ChevronDown,
+  Settings2,
+  X,
 } from "lucide-react";
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
@@ -85,16 +88,384 @@ function MetricCard({
 }
 
 // ---------------------------------------------------------------------------
-// Live Candlestick Chart
+// Indicator Types & Calculation Helpers
+// ---------------------------------------------------------------------------
+interface IndicatorConfig {
+  emaFast: { enabled: boolean; period: number };
+  emaSlow: { enabled: boolean; period: number };
+  sma: { enabled: boolean; period: number };
+  cpr: { enabled: boolean };
+  vwap: { enabled: boolean };
+  bollinger: { enabled: boolean; period: number; stdDev: number };
+}
+
+const DEFAULT_INDICATORS: IndicatorConfig = {
+  emaFast: { enabled: false, period: 9 },
+  emaSlow: { enabled: false, period: 21 },
+  sma: { enabled: false, period: 20 },
+  cpr: { enabled: false },
+  vwap: { enabled: false },
+  bollinger: { enabled: false, period: 20, stdDev: 2 },
+};
+
+interface CandleData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+interface VolumeData {
+  time: number;
+  value: number;
+  color: string;
+}
+
+function calcEMA(closes: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  if (closes.length === 0 || period <= 0) return result;
+  const k = 2 / (period + 1);
+  let ema = closes[0];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) {
+      // SMA seed for first `period` values
+      ema = closes.slice(0, i + 1).reduce((a, b) => a + b, 0) / (i + 1);
+      result.push(null);
+    } else if (i === period - 1) {
+      ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      result.push(ema);
+    } else {
+      ema = closes[i] * k + ema * (1 - k);
+      result.push(ema);
+    }
+  }
+  return result;
+}
+
+function calcSMA(closes: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+    } else {
+      const slice = closes.slice(i - period + 1, i + 1);
+      result.push(slice.reduce((a, b) => a + b, 0) / period);
+    }
+  }
+  return result;
+}
+
+function calcBollinger(
+  closes: number[],
+  period: number,
+  stdDevMult: number
+): { upper: (number | null)[]; middle: (number | null)[]; lower: (number | null)[] } {
+  const middle = calcSMA(closes, period);
+  const upper: (number | null)[] = [];
+  const lower: (number | null)[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (middle[i] == null) {
+      upper.push(null);
+      lower.push(null);
+    } else {
+      const slice = closes.slice(i - period + 1, i + 1);
+      const mean = middle[i]!;
+      const variance = slice.reduce((sum, v) => sum + (v - mean) ** 2, 0) / period;
+      const stdDev = Math.sqrt(variance);
+      upper.push(mean + stdDev * stdDevMult);
+      lower.push(mean - stdDev * stdDevMult);
+    }
+  }
+  return { upper, middle, lower };
+}
+
+function calcVWAP(
+  candles: CandleData[],
+  volumes: number[]
+): (number | null)[] {
+  const result: (number | null)[] = [];
+  let cumTP = 0;
+  let cumVol = 0;
+  let lastDay = -1;
+
+  for (let i = 0; i < candles.length; i++) {
+    const d = new Date(candles[i].time * 1000);
+    const dayNum = Math.floor(candles[i].time / 86400);
+
+    // Reset on new day
+    if (dayNum !== lastDay) {
+      cumTP = 0;
+      cumVol = 0;
+      lastDay = dayNum;
+    }
+
+    const tp = (candles[i].high + candles[i].low + candles[i].close) / 3;
+    const vol = volumes[i] || 1;
+    cumTP += tp * vol;
+    cumVol += vol;
+    result.push(cumVol > 0 ? cumTP / cumVol : null);
+  }
+  return result;
+}
+
+function calcCPR(candles: CandleData[]): {
+  pivot: number | null;
+  tc: number | null;
+  bc: number | null;
+  r1: number | null;
+  r2: number | null;
+  s1: number | null;
+  s2: number | null;
+} | null {
+  // Find previous day's high, low, close from the candle data
+  if (candles.length === 0) return null;
+
+  // Group candles by day
+  const dayMap = new Map<number, { high: number; low: number; close: number }>();
+  for (const c of candles) {
+    const dayNum = Math.floor(c.time / 86400);
+    const existing = dayMap.get(dayNum);
+    if (existing) {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close; // Last close of the day
+    } else {
+      dayMap.set(dayNum, { high: c.high, low: c.low, close: c.close });
+    }
+  }
+
+  const days = Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]);
+  if (days.length < 2) return null;
+
+  // Use the second-to-last complete day
+  const prev = days[days.length - 2][1];
+  const { high: pH, low: pL, close: pC } = prev;
+
+  const pivot = (pH + pL + pC) / 3;
+  const bc = (pH + pL) / 2;
+  const tc = pivot - bc + pivot;
+  const r1 = 2 * pivot - pL;
+  const s1 = 2 * pivot - pH;
+  const r2 = pivot + (pH - pL);
+  const s2 = pivot - (pH - pL);
+
+  return { pivot, tc, bc, r1, r2, s1, s2 };
+}
+
+// ---------------------------------------------------------------------------
+// Indicator Colors
+// ---------------------------------------------------------------------------
+const INDICATOR_COLORS = {
+  emaFast: "#2196F3",    // blue
+  emaSlow: "#FF9800",    // orange
+  sma: "#00BCD4",        // cyan
+  cprPivot: "#9C27B0",   // purple
+  cprTC: "#9C27B0",
+  cprBC: "#9C27B0",
+  cprR1: "#F44336",      // red
+  cprR2: "#F44336",
+  cprS1: "#4CAF50",      // green
+  cprS2: "#4CAF50",
+  vwap: "#E91E63",       // pink
+  bollingerUpper: "#607D8B",
+  bollingerMiddle: "#607D8B",
+  bollingerLower: "#607D8B",
+};
+
+// ---------------------------------------------------------------------------
+// Timeframes
+// ---------------------------------------------------------------------------
+const TIMEFRAMES = [
+  { label: "1m", value: "1m" },
+  { label: "5m", value: "5m" },
+  { label: "15m", value: "15m" },
+  { label: "30m", value: "30m" },
+  { label: "1H", value: "1h" },
+  { label: "1D", value: "1d" },
+];
+
+// ---------------------------------------------------------------------------
+// Indicator Panel Component
+// ---------------------------------------------------------------------------
+function IndicatorPanel({
+  config,
+  onChange,
+  onClose,
+}: {
+  config: IndicatorConfig;
+  onChange: (c: IndicatorConfig) => void;
+  onClose: () => void;
+}) {
+  const toggle = (key: keyof IndicatorConfig) => {
+    onChange({
+      ...config,
+      [key]: { ...config[key], enabled: !config[key].enabled },
+    });
+  };
+
+  const updateParam = (key: keyof IndicatorConfig, param: string, val: number) => {
+    onChange({
+      ...config,
+      [key]: { ...config[key], [param]: val },
+    });
+  };
+
+  return (
+    <div className="absolute top-full right-0 mt-1 w-72 bg-card border rounded-lg shadow-xl z-50 p-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Indicators
+        </span>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="space-y-2.5">
+        {/* EMA Fast */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.emaFast.enabled}
+            onChange={() => toggle("emaFast")}
+            className="rounded border-input h-3.5 w-3.5 accent-blue-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.emaFast }}>
+            EMA Fast
+          </span>
+          <input
+            type="number"
+            value={config.emaFast.period}
+            onChange={(e) => updateParam("emaFast", "period", parseInt(e.target.value) || 9)}
+            className="w-14 px-1.5 py-0.5 text-xs rounded border border-input bg-background text-center"
+            min={1}
+            max={200}
+          />
+        </div>
+
+        {/* EMA Slow */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.emaSlow.enabled}
+            onChange={() => toggle("emaSlow")}
+            className="rounded border-input h-3.5 w-3.5 accent-orange-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.emaSlow }}>
+            EMA Slow
+          </span>
+          <input
+            type="number"
+            value={config.emaSlow.period}
+            onChange={(e) => updateParam("emaSlow", "period", parseInt(e.target.value) || 21)}
+            className="w-14 px-1.5 py-0.5 text-xs rounded border border-input bg-background text-center"
+            min={1}
+            max={200}
+          />
+        </div>
+
+        {/* SMA */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.sma.enabled}
+            onChange={() => toggle("sma")}
+            className="rounded border-input h-3.5 w-3.5 accent-cyan-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.sma }}>
+            SMA
+          </span>
+          <input
+            type="number"
+            value={config.sma.period}
+            onChange={(e) => updateParam("sma", "period", parseInt(e.target.value) || 20)}
+            className="w-14 px-1.5 py-0.5 text-xs rounded border border-input bg-background text-center"
+            min={1}
+            max={200}
+          />
+        </div>
+
+        <div className="border-t border-border my-1" />
+
+        {/* CPR */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.cpr.enabled}
+            onChange={() => toggle("cpr")}
+            className="rounded border-input h-3.5 w-3.5 accent-purple-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.cprPivot }}>
+            CPR (Pivot, S/R)
+          </span>
+          <span className="text-[10px] text-muted-foreground">Auto</span>
+        </div>
+
+        {/* VWAP */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.vwap.enabled}
+            onChange={() => toggle("vwap")}
+            className="rounded border-input h-3.5 w-3.5 accent-pink-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.vwap }}>
+            VWAP
+          </span>
+          <span className="text-[10px] text-muted-foreground">Daily</span>
+        </div>
+
+        <div className="border-t border-border my-1" />
+
+        {/* Bollinger Bands */}
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={config.bollinger.enabled}
+            onChange={() => toggle("bollinger")}
+            className="rounded border-input h-3.5 w-3.5 accent-gray-500"
+          />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.bollingerMiddle }}>
+            Bollinger Bands
+          </span>
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              value={config.bollinger.period}
+              onChange={(e) => updateParam("bollinger", "period", parseInt(e.target.value) || 20)}
+              className="w-10 px-1 py-0.5 text-xs rounded border border-input bg-background text-center"
+              min={5}
+              max={100}
+            />
+            <span className="text-[10px] text-muted-foreground">/</span>
+            <input
+              type="number"
+              value={config.bollinger.stdDev}
+              onChange={(e) => updateParam("bollinger", "stdDev", parseFloat(e.target.value) || 2)}
+              className="w-10 px-1 py-0.5 text-xs rounded border border-input bg-background text-center"
+              min={0.5}
+              max={5}
+              step={0.5}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live Candlestick Chart with Indicators
 // ---------------------------------------------------------------------------
 function LiveChart({
   instruments,
-  timeframe,
+  sessionTimeframe,
   snapshot,
   isRunning,
 }: {
   instruments: string[];
-  timeframe: string;
+  sessionTimeframe: string;
   snapshot: TradingSnapshot | null;
   isRunning: boolean;
 }) {
@@ -103,7 +474,13 @@ function LiveChart({
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const lastCandleRef = useRef<any>(null);
+  const indicatorSeriesRef = useRef<Record<string, any>>({});
+  const rawCandlesRef = useRef<CandleData[]>([]);
+  const rawVolumesRef = useRef<number[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
+  const [chartTimeframe, setChartTimeframe] = useState(sessionTimeframe);
+  const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
 
   // Primary symbol
   const primaryInstrument = instruments[0] || "";
@@ -114,22 +491,191 @@ function LiveChart({
     ? primaryInstrument.split(":")[0]
     : "NSE";
 
+  // Count active indicators
+  const activeCount = Object.values(indicators).filter((v) => v.enabled).length;
+
+  // Apply indicators to chart
+  const applyIndicators = useCallback(
+    (
+      chart: any,
+      candleSeries: any,
+      candles: CandleData[],
+      volumes: number[],
+      config: IndicatorConfig
+    ) => {
+      // Remove old indicator series
+      for (const [key, series] of Object.entries(indicatorSeriesRef.current)) {
+        try {
+          chart.removeSeries(series);
+        } catch {}
+      }
+      indicatorSeriesRef.current = {};
+
+      // Remove old price lines (CPR)
+      try {
+        const allPriceLines = (candleSeries as any).__cprLines || [];
+        for (const pl of allPriceLines) {
+          candleSeries.removePriceLine(pl);
+        }
+      } catch {}
+      (candleSeries as any).__cprLines = [];
+
+      if (candles.length === 0) return;
+
+      const closes = candles.map((c) => c.close);
+      const times = candles.map((c) => c.time);
+
+      // EMA Fast
+      if (config.emaFast.enabled) {
+        const emaData = calcEMA(closes, config.emaFast.period);
+        const series = chart.addLineSeries({
+          color: INDICATOR_COLORS.emaFast,
+          lineWidth: 1.5,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData = emaData
+          .map((v, i) => (v != null ? { time: times[i] as any, value: v } : null))
+          .filter(Boolean);
+        series.setData(lineData);
+        indicatorSeriesRef.current.emaFast = series;
+      }
+
+      // EMA Slow
+      if (config.emaSlow.enabled) {
+        const emaData = calcEMA(closes, config.emaSlow.period);
+        const series = chart.addLineSeries({
+          color: INDICATOR_COLORS.emaSlow,
+          lineWidth: 1.5,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData = emaData
+          .map((v, i) => (v != null ? { time: times[i] as any, value: v } : null))
+          .filter(Boolean);
+        series.setData(lineData);
+        indicatorSeriesRef.current.emaSlow = series;
+      }
+
+      // SMA
+      if (config.sma.enabled) {
+        const smaData = calcSMA(closes, config.sma.period);
+        const series = chart.addLineSeries({
+          color: INDICATOR_COLORS.sma,
+          lineWidth: 1.5,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData = smaData
+          .map((v, i) => (v != null ? { time: times[i] as any, value: v } : null))
+          .filter(Boolean);
+        series.setData(lineData);
+        indicatorSeriesRef.current.sma = series;
+      }
+
+      // VWAP
+      if (config.vwap.enabled) {
+        const vwapData = calcVWAP(candles, volumes);
+        const series = chart.addLineSeries({
+          color: INDICATOR_COLORS.vwap,
+          lineWidth: 1.5,
+          lineStyle: 0,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lineData = vwapData
+          .map((v, i) => (v != null ? { time: times[i] as any, value: v } : null))
+          .filter(Boolean);
+        series.setData(lineData);
+        indicatorSeriesRef.current.vwap = series;
+      }
+
+      // Bollinger Bands
+      if (config.bollinger.enabled) {
+        const bb = calcBollinger(closes, config.bollinger.period, config.bollinger.stdDev);
+
+        const upperSeries = chart.addLineSeries({
+          color: INDICATOR_COLORS.bollingerUpper,
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const middleSeries = chart.addLineSeries({
+          color: INDICATOR_COLORS.bollingerMiddle,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const lowerSeries = chart.addLineSeries({
+          color: INDICATOR_COLORS.bollingerLower,
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+
+        upperSeries.setData(
+          bb.upper.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean)
+        );
+        middleSeries.setData(
+          bb.middle.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean)
+        );
+        lowerSeries.setData(
+          bb.lower.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean)
+        );
+
+        indicatorSeriesRef.current.bollingerUpper = upperSeries;
+        indicatorSeriesRef.current.bollingerMiddle = middleSeries;
+        indicatorSeriesRef.current.bollingerLower = lowerSeries;
+      }
+
+      // CPR (price lines on candle series)
+      if (config.cpr.enabled) {
+        const cpr = calcCPR(candles);
+        if (cpr) {
+          const cprLines: any[] = [];
+          const addCPRLine = (price: number, title: string, color: string, lineStyle: number) => {
+            const pl = candleSeries.createPriceLine({
+              price,
+              color,
+              lineWidth: 1,
+              lineStyle,
+              axisLabelVisible: true,
+              title,
+            });
+            cprLines.push(pl);
+          };
+          addCPRLine(cpr.pivot, "P", INDICATOR_COLORS.cprPivot, 2);  // dashed
+          addCPRLine(cpr.tc, "TC", INDICATOR_COLORS.cprTC, 1);       // dotted
+          addCPRLine(cpr.bc, "BC", INDICATOR_COLORS.cprBC, 1);       // dotted
+          addCPRLine(cpr.r1, "R1", INDICATOR_COLORS.cprR1, 2);       // dashed
+          addCPRLine(cpr.r2, "R2", INDICATOR_COLORS.cprR2, 2);       // dashed
+          addCPRLine(cpr.s1, "S1", INDICATOR_COLORS.cprS1, 2);       // dashed
+          addCPRLine(cpr.s2, "S2", INDICATOR_COLORS.cprS2, 2);       // dashed
+          (candleSeries as any).__cprLines = cprLines;
+        }
+      }
+    },
+    []
+  );
+
   // Load historical candles and create chart
   useEffect(() => {
     if (!sym || !chartContainerRef.current) return;
 
     setChartLoading(true);
 
-    // Fetch historical OHLCV
+    // Fetch historical OHLCV — 30 days for intraday, 365 days for daily
     const today = new Date();
     const fromDate = new Date(today);
-    fromDate.setDate(fromDate.getDate() - 30); // Last 30 days
+    fromDate.setDate(fromDate.getDate() - (chartTimeframe === "1d" ? 365 : 30));
     const fromStr = fromDate.toISOString().slice(0, 10);
     const toStr = today.toISOString().slice(0, 10);
 
     Promise.all([
       apiClient.get(
-        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${timeframe}`
+        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${chartTimeframe}`
       ),
       import("lightweight-charts"),
     ])
@@ -158,11 +704,26 @@ function LiveChart({
           crosshair: { mode: 0 },
           timeScale: {
             borderColor: "#374151",
-            timeVisible: timeframe !== "1d",
+            timeVisible: true,
             secondsVisible: false,
           },
           rightPriceScale: {
             borderColor: "#374151",
+          },
+          localization: {
+            timeFormatter: (time: number) => {
+              const d = new Date(time * 1000);
+              if (chartTimeframe === "1d") {
+                return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
+              }
+              return d.toLocaleString("en-IN", {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+            },
           },
         });
 
@@ -186,37 +747,47 @@ function LiveChart({
 
         // Transform OHLCV data
         const data = ohlcvRes.data || [];
-        const candleData = data.map((d: any) => ({
-          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000) as any,
+        const candleData: CandleData[] = data.map((d: any) => ({
+          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000),
           open: d.open,
           high: d.high,
           low: d.low,
           close: d.close,
         }));
 
-        const volumeData = data.map((d: any) => ({
-          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000) as any,
+        const rawVolumeArr: number[] = data.map((d: any) => d.volume || 0);
+
+        const volumeData: VolumeData[] = data.map((d: any, i: number) => ({
+          time: candleData[i].time,
           value: d.volume || 0,
           color: d.close >= d.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
         }));
 
         // Deduplicate by time
         const seen = new Set<number>();
-        const uniqueCandles: any[] = [];
-        const uniqueVolumes: any[] = [];
-        candleData.forEach((c: any, i: number) => {
+        const uniqueCandles: CandleData[] = [];
+        const uniqueVolumes: VolumeData[] = [];
+        const uniqueRawVolumes: number[] = [];
+        candleData.forEach((c, i) => {
           if (!seen.has(c.time)) {
             seen.add(c.time);
             uniqueCandles.push(c);
             uniqueVolumes.push(volumeData[i]);
+            uniqueRawVolumes.push(rawVolumeArr[i]);
           }
         });
 
-        uniqueCandles.sort((a: any, b: any) => a.time - b.time);
-        uniqueVolumes.sort((a: any, b: any) => a.time - b.time);
+        uniqueCandles.sort((a, b) => a.time - b.time);
+        uniqueVolumes.sort((a, b) => a.time - b.time);
+        // Keep raw volumes aligned with sorted candles
+        const sortMap = uniqueCandles.map((c) => c.time);
+        const sortedRawVolumes = sortMap.map((t) => {
+          const idx = uniqueCandles.findIndex((uc) => uc.time === t);
+          return uniqueRawVolumes[idx] || 0;
+        });
 
-        candleSeries.setData(uniqueCandles);
-        volumeSeries.setData(uniqueVolumes);
+        candleSeries.setData(uniqueCandles as any[]);
+        volumeSeries.setData(uniqueVolumes as any[]);
         chart.timeScale().fitContent();
 
         if (uniqueCandles.length > 0) {
@@ -226,6 +797,11 @@ function LiveChart({
         chartRef.current = chart;
         candleSeriesRef.current = candleSeries;
         volumeSeriesRef.current = volumeSeries;
+        rawCandlesRef.current = uniqueCandles;
+        rawVolumesRef.current = sortedRawVolumes;
+
+        // Apply current indicators
+        applyIndicators(chart, candleSeries, uniqueCandles, sortedRawVolumes, indicators);
 
         // Resize handler
         const handleResize = () => {
@@ -254,7 +830,20 @@ function LiveChart({
         chartRef.current = null;
       }
     };
-  }, [sym, exch, timeframe]);
+  }, [sym, exch, chartTimeframe]);
+
+  // Re-apply indicators when config changes (without re-fetching data)
+  useEffect(() => {
+    if (!chartRef.current || !candleSeriesRef.current || rawCandlesRef.current.length === 0)
+      return;
+    applyIndicators(
+      chartRef.current,
+      candleSeriesRef.current,
+      rawCandlesRef.current,
+      rawVolumesRef.current,
+      indicators
+    );
+  }, [indicators, applyIndicators]);
 
   // Update last candle with live price from snapshot
   useEffect(() => {
@@ -275,7 +864,7 @@ function LiveChart({
       "1h": 3600,
       "1d": 86400,
     };
-    const interval = intervalSecs[timeframe] || 3600;
+    const interval = intervalSecs[chartTimeframe] || 3600;
 
     if (lastCandle) {
       const candleEnd = lastCandle.time + interval;
@@ -293,32 +882,85 @@ function LiveChart({
       } else {
         // Start a new candle
         const newTime = Math.floor(now / interval) * interval;
-        const newCandle = {
-          time: newTime as any,
+        const newCandle: CandleData = {
+          time: newTime,
           open: price,
           high: price,
           low: price,
           close: price,
         };
-        candleSeriesRef.current.update(newCandle);
+        candleSeriesRef.current.update(newCandle as any);
         lastCandleRef.current = newCandle;
       }
     }
-  }, [snapshot, sym, timeframe]);
+  }, [snapshot, sym, chartTimeframe]);
 
   return (
-    <div className="relative h-full min-h-[400px]">
-      {chartLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    <div className="relative h-full min-h-[400px] flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b bg-card/50 flex-shrink-0">
+        {/* Timeframe selector */}
+        <div className="flex items-center gap-0.5">
+          {TIMEFRAMES.map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => setChartTimeframe(tf.value)}
+              className={cn(
+                "px-2.5 py-1 text-xs font-medium rounded transition-colors",
+                chartTimeframe === tf.value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              )}
+            >
+              {tf.label}
+            </button>
+          ))}
         </div>
-      )}
-      <div ref={chartContainerRef} className="w-full h-full" />
-      {!isRunning && !chartLoading && (
-        <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded">
-          Session not running — chart shows historical data only
+
+        {/* Indicators button */}
+        <div className="relative">
+          <button
+            onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors",
+              showIndicatorPanel || activeCount > 0
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent"
+            )}
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+            Indicators
+            {activeCount > 0 && (
+              <span className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded-full leading-none">
+                {activeCount}
+              </span>
+            )}
+          </button>
+
+          {showIndicatorPanel && (
+            <IndicatorPanel
+              config={indicators}
+              onChange={setIndicators}
+              onClose={() => setShowIndicatorPanel(false)}
+            />
+          )}
         </div>
-      )}
+      </div>
+
+      {/* Chart area */}
+      <div className="flex-1 relative">
+        {chartLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        <div ref={chartContainerRef} className="w-full h-full" />
+        {!isRunning && !chartLoading && (
+          <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded">
+            Session not running — chart shows historical data only
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -620,7 +1262,7 @@ export default function PaperTradingDetailPage() {
         <div className="flex-[2] min-w-0 border rounded-lg bg-card overflow-hidden">
           <LiveChart
             instruments={session.instruments}
-            timeframe={session.timeframe}
+            sessionTimeframe={session.timeframe}
             snapshot={snapshot}
             isRunning={isRunning}
           />
