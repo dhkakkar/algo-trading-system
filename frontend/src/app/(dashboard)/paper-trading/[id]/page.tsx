@@ -210,13 +210,13 @@ function calcVWAP(
 }
 
 function calcCPR(candles: CandleData[]): {
-  pivot: number | null;
-  tc: number | null;
-  bc: number | null;
-  r1: number | null;
-  r2: number | null;
-  s1: number | null;
-  s2: number | null;
+  pivot: number;
+  tc: number;
+  bc: number;
+  r1: number;
+  r2: number;
+  s1: number;
+  s2: number;
 } | null {
   // Find previous day's high, low, close from the candle data
   if (candles.length === 0) return null;
