@@ -110,7 +110,7 @@ class NiftyEMACPRStrategy(Strategy):
 
         # ── New day reset ────────────────────────────────────────
         if bar_date is not None and bar_date != self.last_date:
-            self._calc_prev_day_hlc(data, bar_date)
+            self.calc_prev_day_hlc(data, bar_date)
             self.bullish_trigger = False
             self.bearish_trigger = False
             self.trigger_high = None
@@ -185,13 +185,13 @@ class NiftyEMACPRStrategy(Strategy):
         min_bars_for_swing = self.swing_bars * 2 + 1
 
         if self.bullish_trigger and self.bars_since_trigger >= min_bars_for_swing:
-            if self._swing_high_below(self.trigger_high):
+            if self.swing_high_below(self.trigger_high):
                 self.bullish_trigger = False
                 self.trigger_high = None
                 ctx.log("Bull trigger INVALIDATED (swing high)")
 
         if self.bearish_trigger and self.bars_since_trigger >= min_bars_for_swing:
-            if self._swing_low_above(self.trigger_low):
+            if self.swing_low_above(self.trigger_low):
                 self.bearish_trigger = False
                 self.trigger_low = None
                 ctx.log("Bear trigger INVALIDATED (swing low)")
@@ -276,7 +276,7 @@ class NiftyEMACPRStrategy(Strategy):
                 )
                 if self.tsl_active:
                     self.block_long = True
-                self._reset_position()
+                self.reset_position()
 
         # ── Stepwise trailing SL — SHORT ─────────────────────────
         if self.in_short and self.entry_price is not None:
@@ -320,7 +320,7 @@ class NiftyEMACPRStrategy(Strategy):
                 )
                 if self.tsl_active:
                     self.block_short = True
-                self._reset_position()
+                self.reset_position()
 
         # ── Time cutoff — 3:10 PM IST ───────────────────────────
         if not before_cutoff:
@@ -328,17 +328,17 @@ class NiftyEMACPRStrategy(Strategy):
                 ctx.sell(self.symbol, self.quantity,
                          exchange=self.exchange, product=self.product)
                 ctx.log("LONG EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
-                self._reset_position()
+                self.reset_position()
 
             if self.in_short:
                 ctx.buy(self.symbol, self.quantity,
                         exchange=self.exchange, product=self.product)
                 ctx.log("SHORT EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
-                self._reset_position()
+                self.reset_position()
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _reset_position(self):
+    def reset_position(self):
         """Clear all position-related state."""
         self.in_long = False
         self.in_short = False
@@ -348,7 +348,7 @@ class NiftyEMACPRStrategy(Strategy):
         self.tsl_step = 0
         self.tsl_active = False
 
-    def _calc_prev_day_hlc(self, data, current_date):
+    def calc_prev_day_hlc(self, data, current_date):
         """Aggregate intraday bars to get previous day's High, Low, Close."""
         day_data = {}
         for ts in data.index:
@@ -371,7 +371,7 @@ class NiftyEMACPRStrategy(Strategy):
         self.prev_day_low = min(day_data[prev_date]["low"])
         self.prev_day_close = day_data[prev_date]["close"]
 
-    def _swing_high_below(self, threshold):
+    def swing_high_below(self, threshold):
         """True if a swing high below *threshold* exists in recent bars."""
         n = len(self.recent_highs)
         sb = self.swing_bars
@@ -388,7 +388,7 @@ class NiftyEMACPRStrategy(Strategy):
                 return True
         return False
 
-    def _swing_low_above(self, threshold):
+    def swing_low_above(self, threshold):
         """True if a swing low above *threshold* exists in recent bars."""
         n = len(self.recent_lows)
         sb = self.swing_bars

@@ -287,7 +287,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
 
         # --- New day reset ---
         if bar_date is not None and bar_date != self.last_date:
-            self._calc_prev_day_hlc(data, bar_date)
+            self.calc_prev_day_hlc(data, bar_date)
             self.bullish_trigger = False
             self.bearish_trigger = False
             self.trigger_high = None
@@ -352,12 +352,12 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
         # Trigger invalidation (swing)
         min_bars = self.swing_bars * 2 + 1
         if self.bullish_trigger and self.bars_since_trigger >= min_bars:
-            if self._swing_high_below(self.trigger_high):
+            if self.swing_high_below(self.trigger_high):
                 self.bullish_trigger = False
                 self.trigger_high = None
                 ctx.log("Bull trigger INVALIDATED")
         if self.bearish_trigger and self.bars_since_trigger >= min_bars:
-            if self._swing_low_above(self.trigger_low):
+            if self.swing_low_above(self.trigger_low):
                 self.bearish_trigger = False
                 self.trigger_low = None
                 ctx.log("Bear trigger INVALIDATED")
@@ -421,7 +421,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
                 ctx.log("LONG EXIT (" + reason + ") @ " + str(round(cur_close, 2)))
                 if self.tsl_active:
                     self.block_long = True
-                self._reset_position()
+                self.reset_position()
 
         # --- TSL: Short ---
         if self.in_short and self.entry_price is not None:
@@ -448,7 +448,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
                 ctx.log("SHORT EXIT (" + reason + ") @ " + str(round(cur_close, 2)))
                 if self.tsl_active:
                     self.block_short = True
-                self._reset_position()
+                self.reset_position()
 
         # --- Time cutoff 3:10 PM ---
         if not before_cutoff:
@@ -456,16 +456,16 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
                 ctx.sell(self.symbol, self.quantity,
                          exchange=self.exchange, product=self.product)
                 ctx.log("LONG EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
-                self._reset_position()
+                self.reset_position()
             if self.in_short:
                 ctx.buy(self.symbol, self.quantity,
                         exchange=self.exchange, product=self.product)
                 ctx.log("SHORT EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
-                self._reset_position()
+                self.reset_position()
 
     # --- Helpers ---
 
-    def _reset_position(self):
+    def reset_position(self):
         self.in_long = False
         self.in_short = False
         self.entry_price = None
@@ -474,7 +474,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
         self.tsl_step = 0
         self.tsl_active = False
 
-    def _calc_prev_day_hlc(self, data, current_date):
+    def calc_prev_day_hlc(self, data, current_date):
         day_data = {}
         for ts in data.index:
             if not hasattr(ts, "date"):
@@ -494,7 +494,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
         self.prev_day_low = min(day_data[prev_date]["low"])
         self.prev_day_close = day_data[prev_date]["close"]
 
-    def _swing_high_below(self, threshold):
+    def swing_high_below(self, threshold):
         n = len(self.recent_highs)
         sb = self.swing_bars
         if n < sb * 2 + 1:
@@ -510,7 +510,7 @@ const EMA_CPR_TEMPLATE = `class NiftyEMACPRStrategy(Strategy):
                 return True
         return False
 
-    def _swing_low_above(self, threshold):
+    def swing_low_above(self, threshold):
         n = len(self.recent_lows)
         sb = self.swing_bars
         if n < sb * 2 + 1:
