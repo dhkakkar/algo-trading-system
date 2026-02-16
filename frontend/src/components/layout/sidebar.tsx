@@ -45,10 +45,10 @@ export function Sidebar({ mobile, onNavigate }: SidebarProps = {}) {
   return (
     <aside
       className={cn(
-        "flex flex-col bg-card h-screen",
+        "flex flex-col bg-card",
         mobile
-          ? "w-full"
-          : "hidden lg:flex lg:w-64 lg:border-r sticky top-0"
+          ? "w-full h-full"
+          : "hidden lg:flex lg:w-64 lg:border-r h-screen sticky top-0"
       )}
     >
       {/* Logo */}

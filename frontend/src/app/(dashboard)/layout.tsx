@@ -64,7 +64,7 @@ export default function DashboardLayout({
             onClick={closeSidebar}
           />
           {/* Drawer */}
-          <div className="absolute inset-y-0 left-0 w-64 bg-card border-r shadow-xl transition-transform duration-200">
+          <div className="absolute inset-y-0 left-0 w-64 bg-card border-r shadow-xl z-10">
             <Sidebar mobile onNavigate={closeSidebar} />
           </div>
         </div>
