@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+import logging
+from datetime import datetime, timezone
+from kiteconnect import KiteConnect
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
@@ -8,11 +11,13 @@ from app.models.broker_connection import BrokerConnection
 from app.schemas.broker import BrokerConnectRequest, BrokerCallbackRequest, BrokerStatusResponse
 from app.integrations.kite_connect.client import kite_manager
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/broker", tags=["Broker"])
 
 
 @router.get("/status", response_model=BrokerStatusResponse)
 async def get_broker_status(
+    validate: bool = Query(False, description="Validate token with a live API call"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -30,14 +35,38 @@ async def get_broker_status(
             login_url = kite_manager.generate_login_url(connection.api_key)
         return BrokerStatusResponse(
             connected=False,
+            token_valid=False,
             api_key=connection.api_key if connection else None,
             login_url=login_url,
         )
 
+    # Check if token_expiry is set and has passed
+    token_expired = False
+    if connection.token_expiry:
+        token_expired = connection.token_expiry < datetime.now(timezone.utc)
+
+    # Optionally validate with a live API call
+    token_valid = not token_expired
+    if validate and not token_expired:
+        try:
+            kite = KiteConnect(api_key=connection.api_key)
+            kite.set_access_token(connection.access_token)
+            kite.profile()  # Simple API call to verify token
+            token_valid = True
+        except Exception as e:
+            logger.warning(f"Kite token validation failed for user {current_user.id}: {e}")
+            token_valid = False
+
+    login_url = None
+    if not token_valid and connection.api_key:
+        login_url = kite_manager.generate_login_url(connection.api_key)
+
     return BrokerStatusResponse(
         connected=True,
+        token_valid=token_valid,
         api_key=connection.api_key,
         token_expiry=connection.token_expiry,
+        login_url=login_url,
     )
 
 

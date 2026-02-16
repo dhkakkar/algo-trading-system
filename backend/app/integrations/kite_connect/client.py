@@ -1,6 +1,7 @@
 """Kite Connect client management for per-user API access."""
 
 import logging
+from datetime import datetime, timezone, timedelta
 from kiteconnect import KiteConnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +61,16 @@ class KiteClientManager:
         kite = KiteConnect(api_key=api_key)
         return kite.login_url()
 
+    @staticmethod
+    def _calc_token_expiry() -> datetime:
+        """Kite tokens expire at 6:00 AM IST (00:30 UTC) the next day."""
+        now = datetime.now(timezone.utc)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist = now.astimezone(ist)
+        # Next day at 6:00 AM IST
+        expiry_ist = now_ist.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return expiry_ist.astimezone(timezone.utc)
+
     async def complete_auth(
         self, db: AsyncSession, user_id: str, api_key: str, api_secret: str, request_token: str
     ) -> str:
@@ -67,6 +78,7 @@ class KiteClientManager:
         kite = KiteConnect(api_key=api_key)
         data = kite.generate_session(request_token, api_secret=api_secret)
         access_token = data["access_token"]
+        token_expiry = self._calc_token_expiry()
 
         # Upsert broker connection
         result = await db.execute(
@@ -81,6 +93,7 @@ class KiteClientManager:
             connection.api_key = api_key
             connection.api_secret_enc = self._encrypt(api_secret)
             connection.access_token = access_token
+            connection.token_expiry = token_expiry
             connection.is_active = True
         else:
             connection = BrokerConnection(
@@ -89,6 +102,7 @@ class KiteClientManager:
                 api_key=api_key,
                 api_secret_enc=self._encrypt(api_secret),
                 access_token=access_token,
+                token_expiry=token_expiry,
                 is_active=True,
             )
             db.add(connection)

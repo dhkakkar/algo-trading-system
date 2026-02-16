@@ -16,4 +16,5 @@ class BrokerStatusResponse(BaseModel):
     broker: str = "zerodha"
     api_key: str | None = None
     token_expiry: datetime | None = None
+    token_valid: bool = False
     login_url: str | None = None
