@@ -47,12 +47,17 @@ async def get_broker_status(
 
     # Optionally validate with a live API call
     token_valid = not token_expired
-    if validate and not token_expired:
+    if validate:
         try:
             kite = KiteConnect(api_key=connection.api_key)
             kite.set_access_token(connection.access_token)
             kite.profile()  # Simple API call to verify token
             token_valid = True
+            # Recalculate and persist expiry on successful validation
+            fresh_expiry = kite_manager._calc_token_expiry()
+            if connection.token_expiry != fresh_expiry:
+                connection.token_expiry = fresh_expiry
+                await db.flush()
         except Exception as e:
             logger.warning(f"Kite token validation failed for user {current_user.id}: {e}")
             token_valid = False
