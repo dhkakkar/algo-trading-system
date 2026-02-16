@@ -27,9 +27,12 @@ import {
   ChevronDown,
   Settings2,
   X,
+  AlertTriangle,
+  ExternalLink,
 } from "lucide-react";
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
+import { useToastStore } from "@/stores/toast-store";
 
 // ---------------------------------------------------------------------------
 // StatusBadge
@@ -488,6 +491,7 @@ function LiveChart({
   const rawCandlesRef = useRef<CandleData[]>([]);
   const rawVolumesRef = useRef<number[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
+  const [chartError, setChartError] = useState<string | null>(null);
   const [chartTimeframe, setChartTimeframe] = useState(sessionTimeframe);
   const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
@@ -822,6 +826,7 @@ function LiveChart({
     if (!sym || !chartContainerRef.current) return;
 
     setChartLoading(true);
+    setChartError(null);
 
     // Fetch historical OHLCV — 30 days for intraday, 365 days for daily
     const today = new Date();
@@ -940,7 +945,11 @@ function LiveChart({
           window.removeEventListener("resize", handleResize);
         };
       })
-      .catch(() => {
+      .catch((err: any) => {
+        const msg =
+          err?.response?.data?.detail ||
+          `Failed to load chart data (${err?.response?.status || "network error"})`;
+        setChartError(msg);
         setChartLoading(false);
       });
 
@@ -1103,8 +1112,22 @@ function LiveChart({
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         )}
+        {chartError && !chartLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-card/90 z-10">
+            <div className="text-center space-y-2 max-w-xs">
+              <AlertTriangle className="h-8 w-8 text-yellow-500 mx-auto" />
+              <p className="text-sm text-muted-foreground">{chartError}</p>
+              <button
+                onClick={() => { setChartError(null); setChartLoading(true); }}
+                className="text-xs text-primary hover:underline"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
         <div ref={chartContainerRef} className="w-full h-full min-h-[350px]" />
-        {!isRunning && !chartLoading && (
+        {!isRunning && !chartLoading && !chartError && (
           <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded z-10">
             Session not running — chart shows historical data only
           </div>
@@ -1127,6 +1150,7 @@ export default function PaperTradingDetailPage() {
     snapshot,
     loading,
     error,
+    snapshotError,
     fetchSession,
     fetchSnapshot,
     setSnapshot,
@@ -1138,6 +1162,8 @@ export default function PaperTradingDetailPage() {
     clearError,
   } = useTradingStore();
 
+  const addToast = useToastStore((s) => s.addToast);
+
   const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades">(
     "positions"
   );
@@ -1146,13 +1172,37 @@ export default function PaperTradingDetailPage() {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [tradesLoading, setTradesLoading] = useState(false);
 
+  // Broker status
+  const [brokerStatus, setBrokerStatus] = useState<{
+    connected: boolean;
+    token_expiry?: string | null;
+    login_url?: string | null;
+  } | null>(null);
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSnapshotErrorRef = useRef<string | null>(null);
 
   // Fetch session data
   useEffect(() => {
     fetchSession(sessionId);
     fetchSnapshot(sessionId);
   }, [sessionId]);
+
+  // Check broker status on mount
+  useEffect(() => {
+    apiClient
+      .get("/broker/status")
+      .then((res) => setBrokerStatus(res.data))
+      .catch(() => setBrokerStatus({ connected: false }));
+  }, []);
+
+  // Show toast on snapshot errors (only on first occurrence / change)
+  useEffect(() => {
+    if (snapshotError && snapshotError !== lastSnapshotErrorRef.current) {
+      addToast("error", snapshotError);
+    }
+    lastSnapshotErrorRef.current = snapshotError;
+  }, [snapshotError, addToast]);
 
   // Polling for snapshot when session is running
   useEffect(() => {
@@ -1370,6 +1420,52 @@ export default function PaperTradingDetailPage() {
         <div className="rounded-md bg-red-50 border border-red-200 p-4 flex-shrink-0">
           <p className="font-medium text-red-800">Session Error</p>
           <p className="text-sm text-red-700 mt-1">{session.error_message}</p>
+        </div>
+      )}
+
+      {/* Broker / API token warning */}
+      {brokerStatus && !brokerStatus.connected && (
+        <div className="rounded-md bg-yellow-950 border border-yellow-800 p-3 flex items-center gap-3 flex-shrink-0">
+          <AlertTriangle className="h-5 w-5 text-yellow-500 flex-shrink-0" />
+          <div className="flex-1 text-sm">
+            <span className="font-medium text-yellow-400">Broker not connected</span>
+            <span className="text-yellow-500 ml-1">
+              — Kite API token is missing or expired. Live market data will not be available.
+            </span>
+          </div>
+          <button
+            onClick={() => router.push("/settings")}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 font-medium flex-shrink-0"
+          >
+            Settings <ExternalLink className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+      {brokerStatus?.connected && brokerStatus.token_expiry && new Date(brokerStatus.token_expiry) < new Date() && (
+        <div className="rounded-md bg-yellow-950 border border-yellow-800 p-3 flex items-center gap-3 flex-shrink-0">
+          <AlertTriangle className="h-5 w-5 text-yellow-500 flex-shrink-0" />
+          <div className="flex-1 text-sm">
+            <span className="font-medium text-yellow-400">API token expired</span>
+            <span className="text-yellow-500 ml-1">
+              — Your Kite API token has expired. Please re-authenticate to get live data.
+            </span>
+          </div>
+          <button
+            onClick={() => router.push("/settings")}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 font-medium flex-shrink-0"
+          >
+            Settings <ExternalLink className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Snapshot error banner */}
+      {snapshotError && isRunning && (
+        <div className="rounded-md bg-red-950 border border-red-800 p-3 flex items-center gap-3 flex-shrink-0">
+          <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0" />
+          <div className="flex-1 text-sm text-red-300">
+            <span className="font-medium">Data error:</span> {snapshotError}
+          </div>
         </div>
       )}
 

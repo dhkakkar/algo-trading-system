@@ -13,6 +13,7 @@ interface TradingState {
   snapshot: TradingSnapshot | null;
   loading: boolean;
   error: string | null;
+  snapshotError: string | null;
 
   fetchSessions: (mode?: string) => Promise<void>;
   fetchSession: (id: string) => Promise<void>;
@@ -33,6 +34,7 @@ export const useTradingStore = create<TradingState>((set, get) => ({
   snapshot: null,
   loading: false,
   error: null,
+  snapshotError: null,
 
   fetchSessions: async (mode?: string) => {
     set({ loading: true, error: null });
@@ -118,9 +120,18 @@ export const useTradingStore = create<TradingState>((set, get) => ({
   fetchSnapshot: async (id: string) => {
     try {
       const res = await apiClient.get(`/trading/sessions/${id}/snapshot`);
-      set({ snapshot: res.data });
-    } catch {
-      // Snapshot may not be available if session isn't running
+      set({ snapshot: res.data, snapshotError: null });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      const status = err.response?.status;
+      if (status === 400 && detail === "Session is not active") {
+        // Expected when session is stopped — not a real error
+        set({ snapshotError: null });
+      } else {
+        set({
+          snapshotError: detail || `Snapshot failed (HTTP ${status || "network error"})`,
+        });
+      }
     }
   },
 

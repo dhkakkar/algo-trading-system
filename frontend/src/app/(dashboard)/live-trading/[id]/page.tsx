@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
+import { useToastStore } from "@/stores/toast-store";
+import { ExternalLink } from "lucide-react";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -85,6 +87,7 @@ export default function LiveTradingDetailPage() {
     snapshot,
     loading,
     error,
+    snapshotError,
     fetchSession,
     fetchSnapshot,
     setSnapshot,
@@ -96,6 +99,8 @@ export default function LiveTradingDetailPage() {
     clearError,
   } = useTradingStore();
 
+  const addToast = useToastStore((s) => s.addToast);
+
   const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades">(
     "positions"
   );
@@ -106,13 +111,37 @@ export default function LiveTradingDetailPage() {
   const [squareOffLoading, setSquareOffLoading] = useState(false);
   const [showSquareOffConfirm, setShowSquareOffConfirm] = useState(false);
 
+  // Broker status
+  const [brokerStatus, setBrokerStatus] = useState<{
+    connected: boolean;
+    token_expiry?: string | null;
+    login_url?: string | null;
+  } | null>(null);
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSnapshotErrorRef = useRef<string | null>(null);
 
   // Fetch session data
   useEffect(() => {
     fetchSession(sessionId);
     fetchSnapshot(sessionId);
   }, [sessionId]);
+
+  // Check broker status on mount
+  useEffect(() => {
+    apiClient
+      .get("/broker/status")
+      .then((res) => setBrokerStatus(res.data))
+      .catch(() => setBrokerStatus({ connected: false }));
+  }, []);
+
+  // Show toast on snapshot errors (only on first occurrence / change)
+  useEffect(() => {
+    if (snapshotError && snapshotError !== lastSnapshotErrorRef.current) {
+      addToast("error", snapshotError);
+    }
+    lastSnapshotErrorRef.current = snapshotError;
+  }, [snapshotError, addToast]);
 
   // Polling for snapshot when session is running
   useEffect(() => {
@@ -401,6 +430,52 @@ export default function LiveTradingDetailPage() {
         <div className="rounded-md bg-red-50 border border-red-200 p-4">
           <p className="font-medium text-red-800">Session Error</p>
           <p className="text-sm text-red-700 mt-1">{session.error_message}</p>
+        </div>
+      )}
+
+      {/* Broker / API token warning */}
+      {brokerStatus && !brokerStatus.connected && (
+        <div className="rounded-md bg-yellow-950 border border-yellow-800 p-3 flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-yellow-500 flex-shrink-0" />
+          <div className="flex-1 text-sm">
+            <span className="font-medium text-yellow-400">Broker not connected</span>
+            <span className="text-yellow-500 ml-1">
+              — Kite API token is missing or expired. Live trading requires a valid broker connection.
+            </span>
+          </div>
+          <button
+            onClick={() => router.push("/settings")}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 font-medium flex-shrink-0"
+          >
+            Settings <ExternalLink className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+      {brokerStatus?.connected && brokerStatus.token_expiry && new Date(brokerStatus.token_expiry) < new Date() && (
+        <div className="rounded-md bg-yellow-950 border border-yellow-800 p-3 flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-yellow-500 flex-shrink-0" />
+          <div className="flex-1 text-sm">
+            <span className="font-medium text-yellow-400">API token expired</span>
+            <span className="text-yellow-500 ml-1">
+              — Your Kite API token has expired. Please re-authenticate to continue live trading.
+            </span>
+          </div>
+          <button
+            onClick={() => router.push("/settings")}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 font-medium flex-shrink-0"
+          >
+            Settings <ExternalLink className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Snapshot error banner */}
+      {snapshotError && session.status === "running" && (
+        <div className="rounded-md bg-red-950 border border-red-800 p-3 flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0" />
+          <div className="flex-1 text-sm text-red-300">
+            <span className="font-medium">Data error:</span> {snapshotError}
+          </div>
         </div>
       )}
 
