@@ -7,12 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { RefreshCw, CheckCircle2, XCircle } from "lucide-react";
 
 interface BrokerStatus {
   connected: boolean;
   broker: string;
   api_key: string | null;
   token_expiry: string | null;
+  token_valid: boolean;
   login_url: string | null;
 }
 
@@ -38,6 +40,8 @@ export default function SettingsPage() {
   const [brokerSaving, setBrokerSaving] = useState(false);
   const [brokerMessage, setBrokerMessage] = useState("");
   const [requestToken, setRequestToken] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [validateResult, setValidateResult] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetchBrokerStatus();
@@ -50,6 +54,20 @@ export default function SettingsPage() {
       if (res.data.api_key) setApiKey(res.data.api_key);
     } catch {
       // Not connected yet
+    }
+  };
+
+  const handleValidateToken = async () => {
+    setValidating(true);
+    setValidateResult(null);
+    try {
+      const res = await apiClient.get<BrokerStatus>("/broker/status?validate=true");
+      setBrokerStatus(res.data);
+      setValidateResult(res.data.token_valid);
+    } catch {
+      setValidateResult(false);
+    } finally {
+      setValidating(false);
     }
   };
 
@@ -297,7 +315,7 @@ export default function SettingsPage() {
           )}
 
           {brokerStatus?.connected && (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
                 API Key: {brokerStatus.api_key}
               </p>
@@ -317,6 +335,32 @@ export default function SettingsPage() {
                   </span>
                 </p>
               )}
+
+              {/* Token validation */}
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleValidateToken}
+                  disabled={validating}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${validating ? "animate-spin" : ""}`} />
+                  {validating ? "Checking..." : "Validate Token"}
+                </Button>
+                {validateResult === true && (
+                  <span className="flex items-center gap-1 text-sm text-green-500">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Token is valid
+                  </span>
+                )}
+                {validateResult === false && (
+                  <span className="flex items-center gap-1 text-sm text-red-500">
+                    <XCircle className="h-4 w-4" />
+                    Token is invalid or expired
+                  </span>
+                )}
+              </div>
+
               <Button variant="destructive" onClick={handleBrokerDisconnect}>
                 Disconnect
               </Button>
