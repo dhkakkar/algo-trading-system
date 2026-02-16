@@ -720,18 +720,26 @@ export default function BacktestDetailPage() {
     return () => cleanup?.();
   }, [bt?.drawdown_curve]);
 
+  // Parse "NSE:NIFTY 50" → { exchange: "NSE", symbol: "NIFTY 50" }
+  const parseInstrument = (raw: string) => {
+    const idx = raw.indexOf(":");
+    if (idx > 0) return { exchange: raw.slice(0, idx), symbol: raw.slice(idx + 1) };
+    return { exchange: "NSE", symbol: raw };
+  };
+
   // Fetch OHLCV data when chart tab is active
   useEffect(() => {
     if (activeTab !== "chart" || !bt || bt.status !== "completed") return;
-    const sym = chartSymbol || bt.instruments?.[0] || "";
-    if (!sym) return;
+    const rawInst = chartSymbol || bt.instruments?.[0] || "";
+    if (!rawInst) return;
+    const { exchange, symbol } = parseInstrument(rawInst);
 
     setChartLoading(true);
     apiClient
       .get("/market-data/ohlcv", {
         params: {
-          symbol: sym,
-          exchange: "NSE",
+          symbol,
+          exchange,
           from_date: bt.start_date,
           to_date: bt.end_date,
           interval: bt.timeframe,
@@ -818,9 +826,10 @@ export default function BacktestDetailPage() {
       );
 
       // Trade entry/exit markers
-      const sym = chartSymbol || bt.instruments?.[0] || "";
+      const rawInst = chartSymbol || bt.instruments?.[0] || "";
+      const parsed = parseInstrument(rawInst);
       const symbolTrades = trades.filter(
-        (t) => t.symbol.toUpperCase() === sym.toUpperCase()
+        (t) => t.symbol.toUpperCase() === parsed.symbol.toUpperCase()
       );
 
       const markers: any[] = [];
@@ -1520,7 +1529,7 @@ export default function BacktestDetailPage() {
                     </div>
                   ) : chartOHLCV.length === 0 && !chartLoading ? (
                     <div className="h-[500px] flex items-center justify-center text-muted-foreground">
-                      No OHLCV data available for {chartSymbol || bt.instruments?.[0] || "this instrument"}.
+                      No OHLCV data available for {parseInstrument(chartSymbol || bt.instruments?.[0] || "").symbol || "this instrument"}.
                       Ensure market data has been fetched for this symbol and date range.
                     </div>
                   ) : (
@@ -1534,7 +1543,7 @@ export default function BacktestDetailPage() {
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
-                      Trade Signals ({trades.filter((t) => t.symbol.toUpperCase() === (chartSymbol || bt.instruments?.[0] || "").toUpperCase()).length} trades)
+                      Trade Signals ({trades.filter((t) => t.symbol.toUpperCase() === parseInstrument(chartSymbol || bt.instruments?.[0] || "").symbol.toUpperCase()).length} trades)
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -1554,7 +1563,7 @@ export default function BacktestDetailPage() {
                         </thead>
                         <tbody>
                           {trades
-                            .filter((t) => t.symbol.toUpperCase() === (chartSymbol || bt.instruments?.[0] || "").toUpperCase())
+                            .filter((t) => t.symbol.toUpperCase() === parseInstrument(chartSymbol || bt.instruments?.[0] || "").symbol.toUpperCase())
                             .map((t, i) => {
                               const isLong = t.side === "LONG" || t.side === "BUY";
                               return (
