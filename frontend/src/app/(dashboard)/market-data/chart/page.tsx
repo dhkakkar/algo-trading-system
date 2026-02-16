@@ -65,6 +65,16 @@ const SCROLL_LOOKBACK: Record<string, number> = {
   "1d": 365,
 };
 
+// Sensible initial date range per interval (days back from today)
+const DEFAULT_RANGE: Record<string, number> = {
+  "1m": 7,
+  "5m": 14,
+  "15m": 30,
+  "30m": 60,
+  "1h": 90,
+  "1d": 90,
+};
+
 const SPEED_OPTIONS = [1, 2, 5, 10, 25, 50];
 
 const CHART_TIMEZONE_KEY = "chart_timezone";
@@ -94,26 +104,24 @@ export default function ChartPage() {
     return "1d";
   });
   const [fromDate, setFromDate] = useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("md_chart_from");
-      if (saved) return saved;
-    }
+    const rangeDays = DEFAULT_RANGE[interval] || 90;
     const d = new Date();
-    d.setMonth(d.getMonth() - 3);
+    d.setDate(d.getDate() - rangeDays);
     return d.toISOString().slice(0, 10);
   });
-  const [toDate, setToDate] = useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("md_chart_to");
-      if (saved) return saved;
-    }
-    return new Date().toISOString().slice(0, 10);
-  });
+  const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
 
-  // Persist settings to localStorage
+  // Persist interval to localStorage
   useEffect(() => { localStorage.setItem("md_chart_interval", interval); }, [interval]);
-  useEffect(() => { localStorage.setItem("md_chart_from", fromDate); }, [fromDate]);
-  useEffect(() => { localStorage.setItem("md_chart_to", toDate); }, [toDate]);
+
+  // Auto-adjust from date when interval changes to keep a sensible range
+  useEffect(() => {
+    const rangeDays = DEFAULT_RANGE[interval] || 90;
+    const d = new Date();
+    d.setDate(d.getDate() - rangeDays);
+    setFromDate(d.toISOString().slice(0, 10));
+    setToDate(new Date().toISOString().slice(0, 10));
+  }, [interval]);
 
   const [data, setData] = useState<OHLCVBar[]>([]);
   const [loading, setLoading] = useState(false);
@@ -205,9 +213,21 @@ export default function ChartPage() {
     setFetchMsg(null);
 
     try {
-      // For superadmins: always sync from Kite first, then load from DB
+      // Load from DB first — show chart immediately
+      const res = await apiClient.get("/market-data/ohlcv", {
+        params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
+      });
+      setData(res.data);
+      setLoading(false);
+
+      if (res.data.length === 0 && !user?.is_superadmin) {
+        setError("No data available for the selected date range.");
+        return;
+      }
+
+      // For superadmins: sync from Kite in the background, then refresh
       if (user?.is_superadmin) {
-        setFetchMsg("Syncing data from Kite...");
+        setFetchMsg(res.data.length === 0 ? "Syncing data from Kite..." : "Syncing latest from Kite...");
         try {
           const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
           const fetchRes = await apiClient.post("/admin/fetch-historical", {
@@ -217,26 +237,28 @@ export default function ChartPage() {
             to_date: toDate,
             interval: kiteInterval,
           });
-          setFetchMsg(`Synced ${fetchRes.data.count} records from Kite`);
+          const syncCount = fetchRes.data.count || 0;
+          if (syncCount > 0) {
+            // Re-fetch from DB to pick up new records
+            const refreshed = await apiClient.get("/market-data/ohlcv", {
+              params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
+            });
+            if (refreshed.data.length > res.data.length) {
+              setData(refreshed.data);
+              setFetchMsg(`Synced ${syncCount} new records from Kite`);
+            } else {
+              setFetchMsg("Data is up to date");
+            }
+          } else {
+            setFetchMsg("Data is up to date");
+          }
         } catch (fetchErr: any) {
-          // Non-fatal — still try to load whatever is in DB
           setFetchMsg(fetchErr.response?.data?.detail || "Kite sync failed — showing cached data");
         }
-      }
-
-      // Load from DB
-      const res = await apiClient.get("/market-data/ohlcv", {
-        params: { symbol, exchange, from_date: fromDate, to_date: toDate, interval },
-      });
-      setData(res.data);
-      if (res.data.length === 0) {
-        setError("No data available for the selected date range.");
-        setFetchMsg(null);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || "Failed to load chart data");
       setData([]);
-    } finally {
       setLoading(false);
     }
   }, [symbol, exchange, fromDate, toDate, interval, user?.is_superadmin]);
