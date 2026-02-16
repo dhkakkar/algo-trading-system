@@ -707,8 +707,8 @@ function LiveChart({
         }
       });
 
-      candles.sort((a, b) => a.time - b.time);
-      volumes.sort((a, b) => a.time - b.time);
+      candles.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+      volumes.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
       // Align raw volumes with sorted candles
       const timeOrder = candles.map((c) => c.time);
       const sortedRaw = timeOrder.map((t) => {
@@ -854,7 +854,7 @@ function LiveChart({
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
           layout: {
-            background: { type: ColorType.Solid, color: "transparent" },
+            background: { type: ColorType.Solid, color: "#09090b" },
             textColor: "#9ca3af",
             fontSize: 11,
           },
@@ -972,6 +972,7 @@ function LiveChart({
     const price = snapshot.prices[sym] || snapshot.prices[sym.toUpperCase()];
     if (!price) return;
 
+    const isDaily = chartTimeframe === "1d";
     const now = Math.floor(Date.now() / 1000);
     const lastCandle = lastCandleRef.current;
 
@@ -987,30 +988,58 @@ function LiveChart({
     const interval = intervalSecs[chartTimeframe] || 3600;
 
     if (lastCandle) {
-      const candleEnd = lastCandle.time + interval;
-
-      if (now < candleEnd) {
-        // Update current candle
-        const updated = {
-          ...lastCandle,
-          high: Math.max(lastCandle.high, price),
-          low: Math.min(lastCandle.low, price),
-          close: price,
-        };
-        candleSeriesRef.current.update(updated);
-        lastCandleRef.current = updated;
+      if (isDaily) {
+        // For daily, always update the last candle (same day)
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (lastCandle.time === todayStr) {
+          const updated = {
+            ...lastCandle,
+            high: Math.max(lastCandle.high, price),
+            low: Math.min(lastCandle.low, price),
+            close: price,
+          };
+          candleSeriesRef.current.update(updated);
+          lastCandleRef.current = updated;
+        } else {
+          // New day — create new candle
+          const newCandle: CandleData = {
+            time: todayStr as any,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+          };
+          candleSeriesRef.current.update(newCandle as any);
+          lastCandleRef.current = newCandle;
+        }
       } else {
-        // Start a new candle
-        const newTime = Math.floor(now / interval) * interval;
-        const newCandle: CandleData = {
-          time: newTime,
-          open: price,
-          high: price,
-          low: price,
-          close: price,
-        };
-        candleSeriesRef.current.update(newCandle as any);
-        lastCandleRef.current = newCandle;
+        // Intraday — time is a UTC unix timestamp (number)
+        const lastTime = typeof lastCandle.time === "number" ? lastCandle.time : 0;
+        const candleEnd = lastTime + interval;
+
+        if (now < candleEnd) {
+          // Update current candle
+          const updated = {
+            ...lastCandle,
+            high: Math.max(lastCandle.high, price),
+            low: Math.min(lastCandle.low, price),
+            close: price,
+          };
+          candleSeriesRef.current.update(updated);
+          lastCandleRef.current = updated;
+        } else {
+          // Start a new candle
+          const newTime = Math.floor(now / interval) * interval;
+          const newCandle: CandleData = {
+            time: newTime,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+          };
+          candleSeriesRef.current.update(newCandle as any);
+          lastCandleRef.current = newCandle;
+        }
       }
     }
   }, [snapshot, sym, chartTimeframe]);
@@ -1379,7 +1408,7 @@ export default function PaperTradingDetailPage() {
       {/* Main area: Chart + Data Panel */}
       <div className="flex gap-4 flex-1 min-h-0">
         {/* Chart (left) */}
-        <div className="flex-[2] min-w-0 border rounded-lg bg-card relative">
+        <div className="flex-[2] min-w-0 border rounded-lg bg-[#09090b] relative">
           <LiveChart
             instruments={session.instruments}
             sessionTimeframe={session.timeframe}
