@@ -87,8 +87,21 @@ export default function LiveChart({
     }
     return sessionTimeframe;
   });
-  const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
+  const [indicators, setIndicators] = useState<IndicatorConfig>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("chart_indicators");
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return DEFAULT_INDICATORS;
+  });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+
+  // Persist indicator config
+  useEffect(() => {
+    localStorage.setItem("chart_indicators", JSON.stringify(indicators));
+  }, [indicators]);
 
   const timezoneOffset = useMemo(() => {
     if (typeof window === "undefined") return 19800;

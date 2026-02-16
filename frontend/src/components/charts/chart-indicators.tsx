@@ -138,32 +138,63 @@ function calcVWAP(candles: CandleData[], volumes: number[]): (number | null)[] {
   return result;
 }
 
-function calcCPR(candles: CandleData[]) {
+interface CPRLevelData { time: any; value: number }
+interface CPRResult {
+  pivot: CPRLevelData[]; tc: CPRLevelData[]; bc: CPRLevelData[];
+  r1: CPRLevelData[]; r2: CPRLevelData[]; s1: CPRLevelData[]; s2: CPRLevelData[];
+}
+
+function calcCPR(candles: CandleData[]): CPRResult | null {
   if (candles.length === 0) return null;
-  const dayMap = new Map<number, { high: number; low: number; close: number }>();
+
+  // Group candles by day
+  const isDaily = typeof candles[0].time === "string";
+  const getDayKey = (c: CandleData): string =>
+    isDaily ? (c.time as string) : String(Math.floor((c.time as number) / 86400));
+
+  const dayGroups: { firstTime: any; high: number; low: number; close: number }[] = [];
+  const dayMap = new Map<string, number>();
+
   for (const c of candles) {
-    const dayNum = Math.floor(c.time / 86400);
-    const existing = dayMap.get(dayNum);
-    if (existing) {
-      existing.high = Math.max(existing.high, c.high);
-      existing.low = Math.min(existing.low, c.low);
-      existing.close = c.close;
+    const key = getDayKey(c);
+    const idx = dayMap.get(key);
+    if (idx !== undefined) {
+      const g = dayGroups[idx];
+      g.high = Math.max(g.high, c.high);
+      g.low = Math.min(g.low, c.low);
+      g.close = c.close;
     } else {
-      dayMap.set(dayNum, { high: c.high, low: c.low, close: c.close });
+      dayMap.set(key, dayGroups.length);
+      dayGroups.push({ firstTime: c.time, high: c.high, low: c.low, close: c.close });
     }
   }
-  const days = Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]);
-  if (days.length < 2) return null;
-  const prev = days[days.length - 2][1];
-  const { high: pH, low: pL, close: pC } = prev;
-  const pivot = (pH + pL + pC) / 3;
-  const bc = (pH + pL) / 2;
-  const tc = pivot - bc + pivot;
-  const r1 = 2 * pivot - pL;
-  const s1 = 2 * pivot - pH;
-  const r2 = pivot + (pH - pL);
-  const s2 = pivot - (pH - pL);
-  return { pivot, tc, bc, r1, r2, s1, s2 };
+
+  if (dayGroups.length < 2) return null;
+
+  const result: CPRResult = { pivot: [], tc: [], bc: [], r1: [], r2: [], s1: [], s2: [] };
+
+  for (let i = 1; i < dayGroups.length; i++) {
+    const prev = dayGroups[i - 1];
+    const { high: pH, low: pL, close: pC } = prev;
+    const pivot = (pH + pL + pC) / 3;
+    const bc = (pH + pL) / 2;
+    const tc = 2 * pivot - bc;
+    const r1 = 2 * pivot - pL;
+    const s1 = 2 * pivot - pH;
+    const r2 = pivot + (pH - pL);
+    const s2 = pivot - (pH - pL);
+
+    const t = dayGroups[i].firstTime;
+    result.pivot.push({ time: t, value: pivot });
+    result.tc.push({ time: t, value: tc });
+    result.bc.push({ time: t, value: bc });
+    result.r1.push({ time: t, value: r1 });
+    result.r2.push({ time: t, value: r2 });
+    result.s1.push({ time: t, value: s1 });
+    result.s2.push({ time: t, value: s2 });
+  }
+
+  return result.pivot.length > 0 ? result : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,13 +287,6 @@ export function applyIndicators(
   }
   seriesRef.current = {};
 
-  // Remove existing CPR price lines
-  try {
-    const allPriceLines = (candleSeries as any).__cprLines || [];
-    for (const pl of allPriceLines) { candleSeries.removePriceLine(pl); }
-  } catch {}
-  (candleSeries as any).__cprLines = [];
-
   if (candles.length === 0) return;
 
   const closes = candles.map((c) => c.close);
@@ -307,19 +331,25 @@ export function applyIndicators(
   if (config.cpr.enabled) {
     const cpr = calcCPR(candles);
     if (cpr) {
-      const lines: any[] = [];
-      const addLine = (price: number, color: string, title: string, dash: boolean) => {
-        const pl = candleSeries.createPriceLine({ price, color, lineWidth: 1, lineStyle: dash ? 2 : 1, axisLabelVisible: true, title });
-        lines.push(pl);
+      const addCPRLine = (data: CPRLevelData[], color: string, key: string, dash: boolean) => {
+        const series = chart.addLineSeries({
+          color,
+          lineWidth: 1,
+          lineStyle: dash ? 2 : 1,
+          lineType: 1, // WithSteps — holds level flat until next day
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        series.setData(data);
+        seriesRef.current[`cpr_${key}`] = series;
       };
-      addLine(cpr.pivot, INDICATOR_COLORS.cprPivot, "P", false);
-      addLine(cpr.tc, INDICATOR_COLORS.cprTC, "TC", true);
-      addLine(cpr.bc, INDICATOR_COLORS.cprBC, "BC", true);
-      addLine(cpr.r1, INDICATOR_COLORS.cprR1, "R1", true);
-      addLine(cpr.r2, INDICATOR_COLORS.cprR2, "R2", true);
-      addLine(cpr.s1, INDICATOR_COLORS.cprS1, "S1", true);
-      addLine(cpr.s2, INDICATOR_COLORS.cprS2, "S2", true);
-      (candleSeries as any).__cprLines = lines;
+      addCPRLine(cpr.pivot, INDICATOR_COLORS.cprPivot, "pivot", false);
+      addCPRLine(cpr.tc, INDICATOR_COLORS.cprTC, "tc", true);
+      addCPRLine(cpr.bc, INDICATOR_COLORS.cprBC, "bc", true);
+      addCPRLine(cpr.r1, INDICATOR_COLORS.cprR1, "r1", true);
+      addCPRLine(cpr.r2, INDICATOR_COLORS.cprR2, "r2", true);
+      addCPRLine(cpr.s1, INDICATOR_COLORS.cprS1, "s1", true);
+      addCPRLine(cpr.s2, INDICATOR_COLORS.cprS2, "s2", true);
     }
   }
 }

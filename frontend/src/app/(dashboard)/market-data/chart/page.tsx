@@ -128,10 +128,23 @@ export default function ChartPage() {
   const rawCandlesRef = useRef<CandleData[]>([]);
   const rawVolumesRef = useRef<number[]>([]);
 
-  // Indicator state
-  const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
+  // Indicator state (persisted to localStorage)
+  const [indicators, setIndicators] = useState<IndicatorConfig>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("chart_indicators");
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return DEFAULT_INDICATORS;
+  });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
-  const indicatorsRef = useRef<IndicatorConfig>(DEFAULT_INDICATORS);
+  const indicatorsRef = useRef<IndicatorConfig>(indicators);
+
+  // Persist indicator config
+  useEffect(() => {
+    localStorage.setItem("chart_indicators", JSON.stringify(indicators));
+  }, [indicators]);
   const activeCount = Object.values(indicators).filter((v) => v.enabled).length;
 
   // Infinite scroll refs
