@@ -1,0 +1,417 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Dhruv
+
+//@version=5
+strategy("Nifty EMA+CPR Options Selling Strategy",
+     overlay=true,
+     margin_long=100,
+     margin_short=100,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     initial_capital=100000,
+     process_orders_on_close=false,
+     calc_on_every_tick=false)
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ INPUTS ░░░
+// ══════════════════════════════════════════════════════════════
+
+// --- EMA Settings ---
+emaFastLen    = input.int(20,   "EMA Fast Length",           minval=1,  group="EMA Settings")
+emaSlowLen    = input.int(60,   "EMA Slow Length",           minval=1,  group="EMA Settings")
+
+// --- Stop Loss & Trailing ---
+initialSLAmt  = input.float(2500, "Initial Stop Loss (INR)",  minval=1,  group="Stop Loss & Trailing")
+tslActivation = input.float(2000, "TSL Activation Profit (INR)", minval=1, group="Stop Loss & Trailing")
+tslLockPct    = input.float(50,   "TSL Lock-in %",            minval=1, maxval=100, group="Stop Loss & Trailing")
+tslStepSize   = input.float(200,  "TSL Step Size (INR)",      minval=1,  group="Stop Loss & Trailing")
+
+// --- Trigger Settings ---
+swingBars     = input.int(3,    "Swing Invalidation Bars",   minval=1,  group="Trigger Settings")
+
+// --- Time Settings ---
+timeCutoffHr  = input.int(15,   "Cutoff Hour (IST 24h)",     minval=0, maxval=23, group="Time Settings")
+timeCutoffMin = input.int(10,   "Cutoff Minute",             minval=0, maxval=59, group="Time Settings")
+
+// --- Visual Settings ---
+showCPR       = input.bool(true,  "Show CPR Levels",         group="Visuals")
+showTable     = input.bool(true,  "Show Info Table",          group="Visuals")
+showBG        = input.bool(true,  "Show Position Background", group="Visuals")
+showSLLine    = input.bool(true,  "Show SL Line",            group="Visuals")
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ INDICATORS ░░░
+// ══════════════════════════════════════════════════════════════
+
+// --- EMAs ---
+ema20 = ta.ema(close, emaFastLen)
+ema60 = ta.ema(close, emaSlowLen)
+
+// --- CPR from Previous Day ---
+[prevH, prevL, prevC] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
+
+pivot = (prevH + prevL + prevC) / 3.0
+bc    = (prevH + prevL) / 2.0
+tc    = (2.0 * pivot) - bc
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ PLOT INDICATORS ░░░
+// ══════════════════════════════════════════════════════════════
+
+plot(ema20, "EMA 20", color=color.new(color.blue, 0),   linewidth=2)
+plot(ema60, "EMA 60", color=color.new(color.orange, 0), linewidth=2)
+
+pPivot = plot(showCPR ? pivot : na, "Pivot",  color=color.gray,   style=plot.style_circles, linewidth=1)
+pTC    = plot(showCPR ? tc    : na, "TC",     color=color.green,  style=plot.style_circles, linewidth=1)
+pBC    = plot(showCPR ? bc    : na, "BC",     color=color.red,    style=plot.style_circles, linewidth=1)
+fill(pTC, pBC, color=showCPR ? color.new(color.yellow, 90) : na, title="CPR Fill")
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ TIME CHECK (IST) ░░░
+// ══════════════════════════════════════════════════════════════
+
+istH = hour(time,   "Asia/Kolkata")
+istM = minute(time, "Asia/Kolkata")
+
+isBeforeCutoff = (istH < timeCutoffHr) or (istH == timeCutoffHr and istM < timeCutoffMin)
+isCutoffBar    = not isBeforeCutoff
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ PERSISTENT STATE VARIABLES ░░░
+// ══════════════════════════════════════════════════════════════
+
+var bool  bullishTrigger  = false
+var bool  bearishTrigger  = false
+var float triggerHigh     = na
+var float triggerLow      = na
+var int   triggerBarIdx   = na
+
+var bool  inLong          = false
+var bool  inShort         = false
+var float entryPrice      = na
+var float currentSL       = na
+var float peakProfit      = 0.0
+var int   tslStep         = 0
+var bool  tslActive       = false
+
+var bool  blockLong       = false   // re-entry blocking after TSL exit
+var bool  blockShort      = false
+
+var string exitReason     = ""
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ NEW DAY RESET ░░░
+// ══════════════════════════════════════════════════════════════
+
+isNewDay = ta.change(time("D")) != 0
+
+if isNewDay
+    bullishTrigger  := false
+    bearishTrigger  := false
+    triggerHigh     := na
+    triggerLow      := na
+    triggerBarIdx   := na
+    blockLong       := false
+    blockShort      := false
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ TRIGGER CANDLE DETECTION ░░░
+// ══════════════════════════════════════════════════════════════
+
+// Bullish trigger: Close > EMA20 AND Close > EMA60 AND Close > TC
+bullishCond = close > ema20 and close > ema60 and close > tc
+// Bearish trigger: Close < EMA20 AND Close < EMA60 AND Close < BC
+bearishCond = close < ema20 and close < ema60 and close < bc
+
+// Detect new bullish trigger
+if bullishCond and not bullishTrigger and not inLong and not blockLong and isBeforeCutoff
+    bullishTrigger := true
+    triggerHigh    := high
+    triggerBarIdx  := bar_index
+    label.new(bar_index, low, "BUL\nTRIG",
+         style=label.style_label_up, color=color.new(color.green, 30),
+         textcolor=color.white, size=size.tiny)
+
+// Detect new bearish trigger
+if bearishCond and not bearishTrigger and not inShort and not blockShort and isBeforeCutoff
+    bearishTrigger := true
+    triggerLow     := low
+    triggerBarIdx  := bar_index
+    label.new(bar_index, high, "BEAR\nTRIG",
+         style=label.style_label_down, color=color.new(color.red, 30),
+         textcolor=color.white, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ TRIGGER INVALIDATION (3-bar swing high/low) ░░░
+// ══════════════════════════════════════════════════════════════
+
+// Bullish invalidation: if price forms a swing high BELOW the trigger high
+// within swingBars, the trigger is invalid (momentum fading)
+if bullishTrigger and not na(triggerBarIdx) and (bar_index - triggerBarIdx) >= swingBars
+    sHigh = ta.pivothigh(high, swingBars, swingBars)
+    if not na(sHigh) and sHigh < triggerHigh
+        bullishTrigger := false
+        triggerHigh    := na
+        triggerBarIdx  := na
+        label.new(bar_index - swingBars, high + (high * 0.0005), "X",
+             style=label.style_none, textcolor=color.gray, size=size.tiny)
+
+// Bearish invalidation: if price forms a swing low ABOVE the trigger low
+if bearishTrigger and not na(triggerBarIdx) and (bar_index - triggerBarIdx) >= swingBars
+    sLow = ta.pivotlow(low, swingBars, swingBars)
+    if not na(sLow) and sLow > triggerLow
+        bearishTrigger := false
+        triggerLow     := na
+        triggerBarIdx  := na
+        label.new(bar_index - swingBars, low - (low * 0.0005), "X",
+             style=label.style_none, textcolor=color.gray, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ ENTRIES (Breakout / Breakdown) ░░░
+// ══════════════════════════════════════════════════════════════
+
+// Long entry: close breaks above trigger candle high
+longEntry = bullishTrigger and not inLong and not blockLong and isBeforeCutoff and close > triggerHigh
+
+if longEntry
+    strategy.entry("Long", strategy.long)
+    entryPrice     := close
+    currentSL      := close - initialSLAmt
+    peakProfit     := 0.0
+    tslStep        := 0
+    tslActive      := false
+    inLong         := true
+    bullishTrigger := false
+    triggerHigh    := na
+    triggerBarIdx  := na
+    label.new(bar_index, low, "BUY\n" + str.tostring(close, "#.##"),
+         style=label.style_label_up, color=color.green,
+         textcolor=color.white, size=size.small)
+
+// Short entry: close breaks below trigger candle low
+shortEntry = bearishTrigger and not inShort and not blockShort and isBeforeCutoff and close < triggerLow
+
+if shortEntry
+    strategy.entry("Short", strategy.short)
+    entryPrice      := close
+    currentSL       := close + initialSLAmt
+    peakProfit      := 0.0
+    tslStep         := 0
+    tslActive       := false
+    inShort         := true
+    bearishTrigger  := false
+    triggerLow      := na
+    triggerBarIdx   := na
+    label.new(bar_index, high, "SELL\n" + str.tostring(close, "#.##"),
+         style=label.style_label_down, color=color.red,
+         textcolor=color.white, size=size.small)
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ STEPWISE TRAILING STOP-LOSS ░░░
+// ══════════════════════════════════════════════════════════════
+
+// --- LONG TSL ---
+if inLong
+    float uPnL = close - entryPrice
+    if uPnL > peakProfit
+        peakProfit := uPnL
+
+    // Activate TSL when peak profit reaches activation level
+    if not tslActive and peakProfit >= tslActivation
+        tslActive := true
+        tslStep   := 1
+        // Lock in 50% of peak profit
+        currentSL := entryPrice + (peakProfit * tslLockPct / 100.0)
+        label.new(bar_index, low, "TSL\nON",
+             style=label.style_label_up, color=color.new(color.teal, 20),
+             textcolor=color.white, size=size.tiny)
+
+    // Step up TSL as profit grows in step increments
+    if tslActive
+        int newStep = 1 + math.floor((peakProfit - tslActivation) / tslStepSize)
+        if newStep > tslStep
+            tslStep := newStep
+            // Lock in 50% of total peak profit at each new step
+            currentSL := entryPrice + (peakProfit * tslLockPct / 100.0)
+
+    // Check SL hit
+    if close <= currentSL
+        exitReason := tslActive ? "TSL Hit" : "Initial SL Hit"
+        strategy.close("Long", comment=exitReason)
+        label.new(bar_index, high, "EXIT\n" + exitReason + "\n" + str.tostring(close, "#.##"),
+             style=label.style_label_down, color=color.new(color.purple, 20),
+             textcolor=color.white, size=size.small)
+        if tslActive
+            blockLong := true   // block re-entry in same direction after TSL exit
+        inLong     := false
+        entryPrice := na
+        currentSL  := na
+        peakProfit := 0.0
+        tslActive  := false
+        tslStep    := 0
+
+// --- SHORT TSL ---
+if inShort
+    float uPnL = entryPrice - close
+    if uPnL > peakProfit
+        peakProfit := uPnL
+
+    // Activate TSL
+    if not tslActive and peakProfit >= tslActivation
+        tslActive := true
+        tslStep   := 1
+        currentSL := entryPrice - (peakProfit * tslLockPct / 100.0)
+        label.new(bar_index, high, "TSL\nON",
+             style=label.style_label_down, color=color.new(color.teal, 20),
+             textcolor=color.white, size=size.tiny)
+
+    // Step up TSL
+    if tslActive
+        int newStep = 1 + math.floor((peakProfit - tslActivation) / tslStepSize)
+        if newStep > tslStep
+            tslStep := newStep
+            currentSL := entryPrice - (peakProfit * tslLockPct / 100.0)
+
+    // Check SL hit
+    if close >= currentSL
+        exitReason := tslActive ? "TSL Hit" : "Initial SL Hit"
+        strategy.close("Short", comment=exitReason)
+        label.new(bar_index, low, "EXIT\n" + exitReason + "\n" + str.tostring(close, "#.##"),
+             style=label.style_label_up, color=color.new(color.purple, 20),
+             textcolor=color.white, size=size.small)
+        if tslActive
+            blockShort := true
+        inShort    := false
+        entryPrice := na
+        currentSL  := na
+        peakProfit := 0.0
+        tslActive  := false
+        tslStep    := 0
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ TIME CUTOFF — 3:10 PM IST ░░░
+// ══════════════════════════════════════════════════════════════
+
+if isCutoffBar
+    if inLong
+        strategy.close("Long", comment="Time Cutoff 3:10 PM")
+        label.new(bar_index, high, "CUTOFF\n" + str.tostring(close, "#.##"),
+             style=label.style_label_down, color=color.new(color.gray, 20),
+             textcolor=color.white, size=size.small)
+        inLong     := false
+        entryPrice := na
+        currentSL  := na
+        peakProfit := 0.0
+        tslActive  := false
+        tslStep    := 0
+
+    if inShort
+        strategy.close("Short", comment="Time Cutoff 3:10 PM")
+        label.new(bar_index, low, "CUTOFF\n" + str.tostring(close, "#.##"),
+             style=label.style_label_up, color=color.new(color.gray, 20),
+             textcolor=color.white, size=size.small)
+        inShort    := false
+        entryPrice := na
+        currentSL  := na
+        peakProfit := 0.0
+        tslActive  := false
+        tslStep    := 0
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ VISUAL ELEMENTS ░░░
+// ══════════════════════════════════════════════════════════════
+
+// --- Position Background Tint ---
+bgcolor(showBG and inLong  ? color.new(color.green, 93) :
+        showBG and inShort ? color.new(color.red, 93)   : na,
+        title="Position Background")
+
+// --- SL Step Line ---
+plot(showSLLine and (inLong or inShort) ? currentSL : na, "Stop Loss",
+     color=tslActive ? color.new(color.teal, 0) : color.new(color.red, 0),
+     style=plot.style_stepline, linewidth=2)
+
+// --- Trigger Level Lines ---
+plot(bullishTrigger ? triggerHigh : na, "Trigger High",
+     color=color.new(color.green, 40), style=plot.style_linebr, linewidth=1)
+plot(bearishTrigger ? triggerLow  : na, "Trigger Low",
+     color=color.new(color.red, 40),   style=plot.style_linebr, linewidth=1)
+
+// --- Info Table (Top Right) ---
+if showTable and barstate.islast
+    var table infoTbl = table.new(position.top_right, 2, 10,
+         bgcolor=color.new(color.black, 15),
+         border_width=1, border_color=color.new(color.gray, 60))
+
+    // Header
+    table.cell(infoTbl, 0, 0, "Parameter",  bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 0, "Value",      bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+    // Position
+    posText  = inLong ? "LONG" : inShort ? "SHORT" : "FLAT"
+    posColor = inLong ? color.green : inShort ? color.red : color.gray
+    table.cell(infoTbl, 0, 1, "Position",    text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 1, posText,       text_color=posColor,    text_size=size.small, text_halign=text.align_right)
+
+    // Entry Price
+    table.cell(infoTbl, 0, 2, "Entry Price", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 2, na(entryPrice) ? "—" : str.tostring(entryPrice, "#.##"), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+    // Current SL
+    table.cell(infoTbl, 0, 3, "Current SL",  text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 3, na(currentSL) ? "—" : str.tostring(currentSL, "#.##"), text_color=color.red, text_size=size.small, text_halign=text.align_right)
+
+    // TSL Status
+    tslText = tslActive ? "YES (Step " + str.tostring(tslStep) + ")" : "NO"
+    table.cell(infoTbl, 0, 4, "TSL Active",  text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 4, tslText,       text_color=tslActive ? color.teal : color.gray, text_size=size.small, text_halign=text.align_right)
+
+    // Peak Profit
+    table.cell(infoTbl, 0, 5, "Peak Profit",  text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 5, str.tostring(peakProfit, "#.##"), text_color=peakProfit > 0 ? color.green : color.gray, text_size=size.small, text_halign=text.align_right)
+
+    // Unrealized PnL
+    uPnLDisplay = inLong ? close - entryPrice : inShort ? entryPrice - close : 0.0
+    table.cell(infoTbl, 0, 6, "Unrealized PnL", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 6, str.tostring(uPnLDisplay, "#.##"), text_color=uPnLDisplay > 0 ? color.green : uPnLDisplay < 0 ? color.red : color.gray, text_size=size.small, text_halign=text.align_right)
+
+    // Block Long
+    table.cell(infoTbl, 0, 7, "Block Long",  text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 7, blockLong ? "YES" : "NO", text_color=blockLong ? color.red : color.green, text_size=size.small, text_halign=text.align_right)
+
+    // Block Short
+    table.cell(infoTbl, 0, 8, "Block Short", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 8, blockShort ? "YES" : "NO", text_color=blockShort ? color.red : color.green, text_size=size.small, text_halign=text.align_right)
+
+    // Initial SL
+    table.cell(infoTbl, 0, 9, "Initial SL",  text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTbl, 1, 9, str.tostring(initialSLAmt) + " INR", text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+// ══════════════════════════════════════════════════════════════
+// ░░░ ALERT CONDITIONS ░░░
+// ══════════════════════════════════════════════════════════════
+
+alertcondition(bullishTrigger and not bullishTrigger[1],
+     title="Bullish Trigger Detected",
+     message="🟢 Bullish trigger candle detected! HIGH={{high}} — waiting for breakout above trigger high.")
+
+alertcondition(bearishTrigger and not bearishTrigger[1],
+     title="Bearish Trigger Detected",
+     message="🔴 Bearish trigger candle detected! LOW={{low}} — waiting for breakdown below trigger low.")
+
+alertcondition(longEntry,
+     title="Long Entry",
+     message="🟢 LONG Entry at {{close}} | SL: " + str.tostring(initialSLAmt) + " INR below entry")
+
+alertcondition(shortEntry,
+     title="Short Entry",
+     message="🔴 SHORT Entry at {{close}} | SL: " + str.tostring(initialSLAmt) + " INR above entry")
+
+alertcondition(tslActive and not tslActive[1],
+     title="TSL Activated",
+     message="🔔 Trailing Stop-Loss ACTIVATED at step 1 | Profit locked at " + str.tostring(tslLockPct) + "%")
+
+alertcondition(isCutoffBar and (inLong or inShort),
+     title="Time Cutoff Exit",
+     message="⏰ Position closed at 3:10 PM IST time cutoff")
