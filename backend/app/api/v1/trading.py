@@ -1,5 +1,7 @@
 import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user
@@ -62,6 +64,7 @@ async def start_session(
         raise BadRequestException("Session is already running")
 
     if session.mode == "paper":
+      try:
         # Start paper trading runner
         from app.models.strategy import Strategy
         from sqlalchemy import select
@@ -71,8 +74,18 @@ async def start_session(
         if not strategy:
             raise BadRequestException("Strategy not found")
 
+        # Verify Kite Connect is available for live market data
+        from app.integrations.kite_connect.client import kite_manager
+        kite_client = await kite_manager.get_client(db, str(current_user.id))
+        if not kite_client:
+            raise BadRequestException(
+                "Kite Connect not connected. Paper trading requires a broker connection "
+                "for live market data. Go to Settings > Connect Broker."
+            )
+
         from app.engine.paper.runner import PaperTradingRunner
         from app.websocket.server import emit_trading_update
+        from app.db.session import async_session_factory
 
         config = {
             "initial_capital": float(session.initial_capital),
@@ -81,7 +94,39 @@ async def start_session(
             "timeframe": session.timeframe,
         }
 
-        runner = PaperTradingRunner(str(session.id), strategy.code, config)
+        runner = PaperTradingRunner(
+            str(session.id), strategy.code, config,
+            user_id=current_user.id,
+            db_session_factory=async_session_factory,
+        )
+
+        # Pre-populate historical data cache from DB
+        import pandas as pd
+        from datetime import timedelta
+        from app.models.market_data import OHLCVData
+
+        for symbol_str in session.instruments:
+            sym = symbol_str.split(":")[-1] if ":" in symbol_str else symbol_str
+            exch = symbol_str.split(":")[0] if ":" in symbol_str else "NSE"
+            end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(days=365)
+            hist_result = await db.execute(
+                select(OHLCVData).where(
+                    OHLCVData.tradingsymbol == sym.upper(),
+                    OHLCVData.exchange == exch.upper(),
+                    OHLCVData.interval == session.timeframe,
+                    OHLCVData.time >= start_dt,
+                    OHLCVData.time <= end_dt,
+                ).order_by(OHLCVData.time.asc())
+            )
+            records = list(hist_result.scalars().all())
+            if records:
+                df = pd.DataFrame([{
+                    "open": float(r.open), "high": float(r.high),
+                    "low": float(r.low), "close": float(r.close),
+                    "volume": int(r.volume), "timestamp": r.time,
+                } for r in records])
+                runner._historical_cache[sym.upper()] = df
 
         async def on_tick_update(r):
             snapshot = r.get_state_snapshot()
@@ -91,44 +136,48 @@ async def start_session(
         trading_service.register_runner(str(session.id), runner)
 
         # Start the Kite ticker for live data
-        from app.integrations.kite_connect.client import kite_manager
-        kite_client = await kite_manager.get_client(db, str(current_user.id))
-
-        if kite_client:
-            # Look up instrument tokens for subscribed symbols
-            from app.models.instrument import Instrument
-            tokens_map = []
-            for symbol_str in session.instruments:
-                sym = symbol_str.split(":")[-1] if ":" in symbol_str else symbol_str
-                exch = symbol_str.split(":")[0] if ":" in symbol_str else "NSE"
-                result = await db.execute(
-                    select(Instrument).where(
-                        Instrument.tradingsymbol == sym.upper(),
-                        Instrument.exchange == exch.upper(),
-                    )
+        from app.models.instrument import Instrument
+        tokens_map = []
+        for symbol_str in session.instruments:
+            sym = symbol_str.split(":")[-1] if ":" in symbol_str else symbol_str
+            exch = symbol_str.split(":")[0] if ":" in symbol_str else "NSE"
+            result = await db.execute(
+                select(Instrument).where(
+                    Instrument.tradingsymbol == sym.upper(),
+                    Instrument.exchange == exch.upper(),
                 )
-                inst = result.scalar_one_or_none()
-                if inst:
-                    tokens_map.append({
-                        "instrument_token": inst.instrument_token,
-                        "tradingsymbol": inst.tradingsymbol,
-                    })
+            )
+            inst = result.scalar_one_or_none()
+            if inst:
+                tokens_map.append({
+                    "instrument_token": inst.instrument_token,
+                    "tradingsymbol": inst.tradingsymbol,
+                })
 
-            if tokens_map:
-                import asyncio
-                from app.engine.paper.ticker import KiteTicker
+        if tokens_map:
+            import asyncio
+            from app.engine.paper.ticker import KiteTicker
 
-                ticker = KiteTicker(
-                    api_key=kite_client.api_key if hasattr(kite_client, 'api_key') else "",
-                    access_token=kite_client.access_token if hasattr(kite_client, 'access_token') else "",
-                )
-                ticker.set_instruments(tokens_map)
+            ticker = KiteTicker(
+                api_key=kite_client.api_key if hasattr(kite_client, 'api_key') else "",
+                access_token=kite_client.access_token if hasattr(kite_client, 'access_token') else "",
+            )
+            ticker.set_instruments(tokens_map)
 
-                async def on_ticks(prices):
-                    await runner.on_market_data(prices)
+            async def on_ticks(prices):
+                await runner.on_market_data(prices)
 
-                ticker.on_tick(on_ticks)
-                ticker.start(asyncio.get_event_loop())
+            ticker.on_tick(on_ticks)
+            ticker.start(asyncio.get_event_loop())
+            runner._ticker = ticker
+
+      except BadRequestException:
+          raise
+      except Exception as exc:
+          await trading_service.update_session_status(
+              db, session_id, "error", error_message=str(exc)
+          )
+          raise BadRequestException(f"Failed to start paper trading: {exc}")
 
     elif session.mode == "live":
         # Start live trading runner

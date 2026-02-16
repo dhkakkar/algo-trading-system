@@ -147,7 +147,8 @@ class PaperTradingRunner(BaseRunner):
     5. Emits position/P&L updates via callback
     """
 
-    def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any]):
+    def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any],
+                 user_id=None, db_session_factory=None):
         self.session_id = session_id
         self._strategy_code = strategy_code
         self._config = config
@@ -166,6 +167,9 @@ class PaperTradingRunner(BaseRunner):
         self._paused = False
         self._tick_callback: Optional[Any] = None  # called after each tick processing
         self._logs: list[str] = []
+        self._ticker: Optional[Any] = None
+        self._user_id = user_id
+        self._db_session_factory = db_session_factory
 
     # BaseRunner interface
     async def initialize(self, strategy_code: str, params: dict, instruments: list) -> None:
@@ -183,7 +187,7 @@ class PaperTradingRunner(BaseRunner):
         self._tracked_symbols.update(data.keys())
 
         # Try to fill pending orders
-        self._process_orders()
+        await self._process_orders()
 
         # Call strategy on_data
         if self._strategy_instance and self._context:
@@ -194,7 +198,7 @@ class PaperTradingRunner(BaseRunner):
                 logger.warning("Paper strategy on_data error: %s", exc)
 
         # Process any new orders placed during on_data
-        self._process_orders()
+        await self._process_orders()
 
         # Invoke update callback (for Socket.IO emission)
         if self._tick_callback:
@@ -224,6 +228,12 @@ class PaperTradingRunner(BaseRunner):
 
     async def shutdown(self) -> None:
         self._running = False
+        if self._ticker:
+            try:
+                self._ticker.stop()
+            except Exception:
+                pass
+            self._ticker = None
         if self._strategy_instance and self._context:
             try:
                 self._strategy_instance.on_stop(self._context)
@@ -273,7 +283,7 @@ class PaperTradingRunner(BaseRunner):
             return df.tail(periods)
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-    def _process_orders(self):
+    async def _process_orders(self):
         """Try to fill all pending orders."""
         still_pending = []
         for order in self._order_queue:
@@ -282,7 +292,15 @@ class PaperTradingRunner(BaseRunner):
             fill = self.broker.try_fill_order(order)
             if fill:
                 order.status = "completed"
-                self.portfolio.update_on_fill(fill)
+                completed_trade = self.portfolio.update_on_fill(fill)
+
+                # Persist order to DB
+                await self._persist_fill(order, fill)
+
+                # Persist completed trade if a position was closed
+                if completed_trade:
+                    await self._persist_trade(completed_trade)
+
                 # Notify strategy
                 if self._strategy_instance:
                     try:
@@ -299,6 +317,76 @@ class PaperTradingRunner(BaseRunner):
             else:
                 still_pending.append(order)
         self._order_queue = still_pending
+
+    async def _persist_fill(self, order: OrderEvent, fill: FillEvent):
+        """Persist a filled order to the database."""
+        if not self._db_session_factory or not self._user_id:
+            return
+        try:
+            from app.models.order import Order as OrderModel
+            async with self._db_session_factory() as db:
+                db_order = OrderModel(
+                    user_id=self._user_id,
+                    trading_session_id=uuid.UUID(self.session_id),
+                    broker_order_id=fill.order_id,
+                    tradingsymbol=fill.symbol,
+                    exchange=fill.exchange,
+                    transaction_type=fill.side,
+                    order_type=order.order_type,
+                    product=order.product,
+                    quantity=fill.quantity,
+                    price=order.price,
+                    filled_quantity=fill.quantity,
+                    average_price=fill.fill_price,
+                    status="COMPLETE",
+                    mode="paper",
+                    placed_at=order.timestamp,
+                    filled_at=fill.timestamp,
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(db_order)
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to persist paper order: %s", exc)
+
+    async def _persist_trade(self, trade: dict):
+        """Persist a completed trade to the database."""
+        if not self._db_session_factory or not self._user_id:
+            return
+        try:
+            from app.models.trade import Trade as TradeModel
+            from dateutil.parser import parse as parse_dt
+
+            entry_at = trade.get("entry_at")
+            if isinstance(entry_at, str):
+                entry_at = parse_dt(entry_at)
+            exit_at = trade.get("exit_at")
+            if isinstance(exit_at, str):
+                exit_at = parse_dt(exit_at)
+
+            async with self._db_session_factory() as db:
+                db_trade = TradeModel(
+                    user_id=self._user_id,
+                    trading_session_id=uuid.UUID(self.session_id),
+                    tradingsymbol=trade["symbol"],
+                    exchange=trade.get("exchange", "NSE"),
+                    side=trade["side"],
+                    quantity=int(trade["quantity"]),
+                    entry_price=float(trade["entry_price"]),
+                    exit_price=float(trade["exit_price"]) if trade.get("exit_price") else None,
+                    pnl=float(trade["pnl"]) if trade.get("pnl") is not None else None,
+                    pnl_percent=float(trade["pnl_percent"]) if trade.get("pnl_percent") is not None else None,
+                    charges=float(trade.get("charges", 0)),
+                    net_pnl=float(trade["net_pnl"]) if trade.get("net_pnl") is not None else None,
+                    mode="paper",
+                    entry_at=entry_at,
+                    exit_at=exit_at,
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(db_trade)
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to persist paper trade: %s", exc)
 
     def get_state_snapshot(self) -> dict:
         """Return current state for Socket.IO emission."""

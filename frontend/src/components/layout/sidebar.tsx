@@ -14,6 +14,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
+import { KillSwitch } from "./kill-switch";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -30,7 +31,7 @@ const bottomItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { logout } = useAuthStore();
+  const { logout, user } = useAuthStore();
 
   return (
     <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:border-r bg-card h-screen sticky top-0">
@@ -63,6 +64,13 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Kill Switch */}
+      {user?.is_superadmin && (
+        <div className="border-t py-3 px-3">
+          <KillSwitch />
+        </div>
+      )}
 
       {/* Bottom section */}
       <div className="border-t py-4 px-3 space-y-1">

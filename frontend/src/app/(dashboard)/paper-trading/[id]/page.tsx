@@ -28,6 +28,9 @@ import {
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
 
+// ---------------------------------------------------------------------------
+// StatusBadge
+// ---------------------------------------------------------------------------
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     stopped: "bg-gray-100 text-gray-800",
@@ -54,6 +57,9 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// MetricCard
+// ---------------------------------------------------------------------------
 function MetricCard({
   label,
   value,
@@ -66,18 +72,260 @@ function MetricCard({
   color?: string;
 }) {
   return (
-    <div className="bg-card border rounded-lg p-4">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+    <div className="bg-card border rounded-lg p-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
           {label}
         </span>
-        <Icon className={cn("h-4 w-4", color || "text-muted-foreground")} />
+        <Icon className={cn("h-3.5 w-3.5", color || "text-muted-foreground")} />
       </div>
-      <p className={cn("text-xl font-bold", color)}>{value}</p>
+      <p className={cn("text-lg font-bold", color)}>{value}</p>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Live Candlestick Chart
+// ---------------------------------------------------------------------------
+function LiveChart({
+  instruments,
+  timeframe,
+  snapshot,
+  isRunning,
+}: {
+  instruments: string[];
+  timeframe: string;
+  snapshot: TradingSnapshot | null;
+  isRunning: boolean;
+}) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const candleSeriesRef = useRef<any>(null);
+  const volumeSeriesRef = useRef<any>(null);
+  const lastCandleRef = useRef<any>(null);
+  const [chartLoading, setChartLoading] = useState(true);
+
+  // Primary symbol
+  const primaryInstrument = instruments[0] || "";
+  const sym = primaryInstrument.includes(":")
+    ? primaryInstrument.split(":")[1]
+    : primaryInstrument;
+  const exch = primaryInstrument.includes(":")
+    ? primaryInstrument.split(":")[0]
+    : "NSE";
+
+  // Load historical candles and create chart
+  useEffect(() => {
+    if (!sym || !chartContainerRef.current) return;
+
+    setChartLoading(true);
+
+    // Fetch historical OHLCV
+    const today = new Date();
+    const fromDate = new Date(today);
+    fromDate.setDate(fromDate.getDate() - 30); // Last 30 days
+    const fromStr = fromDate.toISOString().slice(0, 10);
+    const toStr = today.toISOString().slice(0, 10);
+
+    Promise.all([
+      apiClient.get(
+        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${timeframe}`
+      ),
+      import("lightweight-charts"),
+    ])
+      .then(([ohlcvRes, lc]) => {
+        if (!chartContainerRef.current) return;
+
+        // Clean up old chart
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+
+        const { createChart, ColorType } = lc;
+
+        const chart = createChart(chartContainerRef.current, {
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
+          layout: {
+            background: { type: ColorType.Solid, color: "transparent" },
+            textColor: "#9ca3af",
+          },
+          grid: {
+            vertLines: { color: "#1f2937" },
+            horzLines: { color: "#1f2937" },
+          },
+          crosshair: { mode: 0 },
+          timeScale: {
+            borderColor: "#374151",
+            timeVisible: timeframe !== "1d",
+            secondsVisible: false,
+          },
+          rightPriceScale: {
+            borderColor: "#374151",
+          },
+        });
+
+        const candleSeries = chart.addCandlestickSeries({
+          upColor: "#22c55e",
+          downColor: "#ef4444",
+          borderDownColor: "#ef4444",
+          borderUpColor: "#22c55e",
+          wickDownColor: "#ef4444",
+          wickUpColor: "#22c55e",
+        });
+
+        const volumeSeries = chart.addHistogramSeries({
+          priceFormat: { type: "volume" },
+          priceScaleId: "volume",
+        });
+
+        chart.priceScale("volume").applyOptions({
+          scaleMargins: { top: 0.8, bottom: 0 },
+        });
+
+        // Transform OHLCV data
+        const data = ohlcvRes.data || [];
+        const candleData = data.map((d: any) => ({
+          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000) as any,
+          open: d.open,
+          high: d.high,
+          low: d.low,
+          close: d.close,
+        }));
+
+        const volumeData = data.map((d: any) => ({
+          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000) as any,
+          value: d.volume || 0,
+          color: d.close >= d.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+        }));
+
+        // Deduplicate by time
+        const seen = new Set<number>();
+        const uniqueCandles: any[] = [];
+        const uniqueVolumes: any[] = [];
+        candleData.forEach((c: any, i: number) => {
+          if (!seen.has(c.time)) {
+            seen.add(c.time);
+            uniqueCandles.push(c);
+            uniqueVolumes.push(volumeData[i]);
+          }
+        });
+
+        uniqueCandles.sort((a: any, b: any) => a.time - b.time);
+        uniqueVolumes.sort((a: any, b: any) => a.time - b.time);
+
+        candleSeries.setData(uniqueCandles);
+        volumeSeries.setData(uniqueVolumes);
+        chart.timeScale().fitContent();
+
+        if (uniqueCandles.length > 0) {
+          lastCandleRef.current = uniqueCandles[uniqueCandles.length - 1];
+        }
+
+        chartRef.current = chart;
+        candleSeriesRef.current = candleSeries;
+        volumeSeriesRef.current = volumeSeries;
+
+        // Resize handler
+        const handleResize = () => {
+          if (chartContainerRef.current && chartRef.current) {
+            chartRef.current.applyOptions({
+              width: chartContainerRef.current.clientWidth,
+              height: chartContainerRef.current.clientHeight,
+            });
+          }
+        };
+        window.addEventListener("resize", handleResize);
+
+        setChartLoading(false);
+
+        return () => {
+          window.removeEventListener("resize", handleResize);
+        };
+      })
+      .catch(() => {
+        setChartLoading(false);
+      });
+
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+    };
+  }, [sym, exch, timeframe]);
+
+  // Update last candle with live price from snapshot
+  useEffect(() => {
+    if (!snapshot || !candleSeriesRef.current || !sym) return;
+
+    const price = snapshot.prices[sym] || snapshot.prices[sym.toUpperCase()];
+    if (!price) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    const lastCandle = lastCandleRef.current;
+
+    // Determine candle interval in seconds
+    const intervalSecs: Record<string, number> = {
+      "1m": 60,
+      "5m": 300,
+      "15m": 900,
+      "30m": 1800,
+      "1h": 3600,
+      "1d": 86400,
+    };
+    const interval = intervalSecs[timeframe] || 3600;
+
+    if (lastCandle) {
+      const candleEnd = lastCandle.time + interval;
+
+      if (now < candleEnd) {
+        // Update current candle
+        const updated = {
+          ...lastCandle,
+          high: Math.max(lastCandle.high, price),
+          low: Math.min(lastCandle.low, price),
+          close: price,
+        };
+        candleSeriesRef.current.update(updated);
+        lastCandleRef.current = updated;
+      } else {
+        // Start a new candle
+        const newTime = Math.floor(now / interval) * interval;
+        const newCandle = {
+          time: newTime as any,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+        };
+        candleSeriesRef.current.update(newCandle);
+        lastCandleRef.current = newCandle;
+      }
+    }
+  }, [snapshot, sym, timeframe]);
+
+  return (
+    <div className="relative h-full min-h-[400px]">
+      {chartLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      )}
+      <div ref={chartContainerRef} className="w-full h-full" />
+      {!isRunning && !chartLoading && (
+        <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded">
+          Session not running — chart shows historical data only
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 export default function PaperTradingDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -242,15 +490,16 @@ export default function PaperTradingDetailPage() {
 
   const pnlColor =
     snapshot && snapshot.total_pnl >= 0 ? "text-green-600" : "text-red-600";
+  const isRunning = session.status === "running";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-shrink-0">
         <div>
           <button
             onClick={() => router.push("/paper-trading")}
-            className="flex items-center text-sm text-muted-foreground hover:text-foreground mb-2"
+            className="flex items-center text-sm text-muted-foreground hover:text-foreground mb-1"
           >
             <ArrowLeft className="h-4 w-4 mr-1" /> Back to Paper Trading
           </button>
@@ -260,7 +509,7 @@ export default function PaperTradingDetailPage() {
             </h1>
             <StatusBadge status={session.status} />
           </div>
-          <p className="text-muted-foreground text-sm mt-1">
+          <p className="text-muted-foreground text-sm mt-0.5">
             Strategy: {session.strategy_id.slice(0, 8)}... v
             {session.strategy_version} &middot;{" "}
             {session.instruments.join(", ")} &middot; {session.timeframe} &middot;{" "}
@@ -327,458 +576,260 @@ export default function PaperTradingDetailPage() {
 
       {/* Error message */}
       {session.status === "error" && session.error_message && (
-        <div className="rounded-md bg-red-50 border border-red-200 p-4">
+        <div className="rounded-md bg-red-50 border border-red-200 p-4 flex-shrink-0">
           <p className="font-medium text-red-800">Session Error</p>
           <p className="text-sm text-red-700 mt-1">{session.error_message}</p>
         </div>
       )}
 
       {/* Stat Cards */}
-      {snapshot && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <MetricCard
-            label="Portfolio Value"
-            value={formatCurrency(snapshot.portfolio_value)}
-            icon={DollarSign}
-            color={
-              snapshot.portfolio_value >= session.initial_capital
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-shrink-0">
+        <MetricCard
+          label="Portfolio Value"
+          value={snapshot ? formatCurrency(snapshot.portfolio_value) : formatCurrency(session.initial_capital)}
+          icon={DollarSign}
+          color={
+            snapshot
+              ? snapshot.portfolio_value >= session.initial_capital
                 ? "text-green-600"
                 : "text-red-600"
-            }
-          />
-          <MetricCard
-            label="Cash"
-            value={formatCurrency(snapshot.cash)}
-            icon={DollarSign}
-          />
-          <MetricCard
-            label="Total P&L"
-            value={formatCurrency(snapshot.total_pnl)}
-            icon={snapshot.total_pnl >= 0 ? TrendingUp : TrendingDown}
-            color={pnlColor}
-          />
-          <MetricCard
-            label="Total Trades"
-            value={formatNumber(snapshot.total_trades)}
-            icon={BarChart3}
-          />
-        </div>
-      )}
-
-      {/* No snapshot yet for non-running sessions */}
-      {!snapshot &&
-        (session.status === "stopped" || session.status === "error") && (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center h-40 space-y-3">
-              <Activity className="h-8 w-8 text-muted-foreground" />
-              <p className="text-muted-foreground text-sm">
-                Start the session to see live trading data
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-      {/* Tab Navigation */}
-      <div className="border-b">
-        <nav className="flex space-x-8">
-          <button
-            onClick={() => setActiveTab("positions")}
-            className={cn(
-              "pb-3 text-sm font-medium border-b-2 transition-colors",
-              activeTab === "positions"
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Positions
-            {snapshot && snapshot.positions.length > 0 && (
-              <span className="ml-1.5 text-xs bg-accent text-accent-foreground px-1.5 py-0.5 rounded-full">
-                {snapshot.positions.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab("orders")}
-            className={cn(
-              "pb-3 text-sm font-medium border-b-2 transition-colors",
-              activeTab === "orders"
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Orders
-          </button>
-          <button
-            onClick={() => setActiveTab("trades")}
-            className={cn(
-              "pb-3 text-sm font-medium border-b-2 transition-colors",
-              activeTab === "trades"
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Trades
-          </button>
-        </nav>
+              : undefined
+          }
+        />
+        <MetricCard
+          label="Cash"
+          value={snapshot ? formatCurrency(snapshot.cash) : formatCurrency(session.initial_capital)}
+          icon={DollarSign}
+        />
+        <MetricCard
+          label="Total P&L"
+          value={snapshot ? formatCurrency(snapshot.total_pnl) : formatCurrency(0)}
+          icon={snapshot && snapshot.total_pnl >= 0 ? TrendingUp : TrendingDown}
+          color={snapshot ? pnlColor : undefined}
+        />
+        <MetricCard
+          label="Total Trades"
+          value={snapshot ? formatNumber(snapshot.total_trades) : "0"}
+          icon={BarChart3}
+        />
       </div>
 
-      {/* Positions Tab */}
-      {activeTab === "positions" && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Open Positions</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!snapshot || snapshot.positions.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-muted-foreground">
-                No open positions
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left">
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Symbol
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Side
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Qty
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Avg Price
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Current Price
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Unrealized P&L
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        P&L %
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
+      {/* Main area: Chart + Data Panel */}
+      <div className="flex gap-4 flex-1 min-h-0">
+        {/* Chart (left) */}
+        <div className="flex-[2] min-w-0 border rounded-lg bg-card overflow-hidden">
+          <LiveChart
+            instruments={session.instruments}
+            timeframe={session.timeframe}
+            snapshot={snapshot}
+            isRunning={isRunning}
+          />
+        </div>
+
+        {/* Data Panel (right) */}
+        <div className="flex-1 min-w-[320px] flex flex-col min-h-0">
+          {/* Tab Navigation */}
+          <div className="border-b flex-shrink-0">
+            <nav className="flex">
+              {(["positions", "orders", "trades"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={cn(
+                    "flex-1 pb-2 text-xs font-medium border-b-2 transition-colors capitalize text-center",
+                    activeTab === tab
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {tab}
+                  {tab === "positions" && snapshot && snapshot.positions.length > 0 && (
+                    <span className="ml-1 text-[10px] bg-accent text-accent-foreground px-1 py-0.5 rounded-full">
+                      {snapshot.positions.length}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {/* Tab Content */}
+          <div className="flex-1 overflow-y-auto">
+            {/* Positions Tab */}
+            {activeTab === "positions" && (
+              <div className="p-2">
+                {!snapshot || snapshot.positions.length === 0 ? (
+                  <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
+                    No open positions
+                  </div>
+                ) : (
+                  <div className="space-y-2">
                     {snapshot.positions.map((pos, i) => (
-                      <tr
+                      <div
                         key={`${pos.symbol}-${pos.exchange}-${i}`}
-                        className="border-b last:border-0 hover:bg-accent/50"
+                        className="border rounded-md p-2.5 text-sm"
                       >
-                        <td className="py-2.5 font-medium">
-                          {pos.exchange}:{pos.symbol}
-                        </td>
-                        <td className="py-2.5">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{pos.exchange}:{pos.symbol}</span>
+                            <span
+                              className={cn(
+                                "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                                pos.side === "LONG" || pos.side === "BUY"
+                                  ? "bg-green-100 text-green-800"
+                                  : "bg-red-100 text-red-800"
+                              )}
+                            >
+                              {pos.side}
+                            </span>
+                          </div>
+                          <span className="text-muted-foreground text-xs">
+                            Qty: {pos.quantity}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-muted-foreground">
+                            Avg: {formatCurrency(pos.avg_price)} &rarr; {formatCurrency(pos.current_price)}
+                          </span>
                           <span
                             className={cn(
-                              "inline-flex px-2 py-0.5 rounded text-xs font-medium",
-                              pos.side === "LONG" || pos.side === "BUY"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-red-100 text-red-800"
+                              "font-medium",
+                              pos.unrealized_pnl >= 0 ? "text-green-600" : "text-red-600"
                             )}
                           >
-                            {pos.side}
+                            {formatCurrency(pos.unrealized_pnl)} ({formatPercent(pos.pnl_percent)})
                           </span>
-                        </td>
-                        <td className="py-2.5">{pos.quantity}</td>
-                        <td className="py-2.5">
-                          {formatCurrency(pos.avg_price)}
-                        </td>
-                        <td className="py-2.5">
-                          {formatCurrency(pos.current_price)}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2.5 font-medium",
-                            pos.unrealized_pnl >= 0
-                              ? "text-green-600"
-                              : "text-red-600"
-                          )}
-                        >
-                          {formatCurrency(pos.unrealized_pnl)}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2.5 font-medium",
-                            pos.pnl_percent >= 0
-                              ? "text-green-600"
-                              : "text-red-600"
-                          )}
-                        >
-                          {formatPercent(pos.pnl_percent)}
-                        </td>
-                      </tr>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             )}
-          </CardContent>
-        </Card>
-      )}
 
-      {/* Orders Tab */}
-      {activeTab === "orders" && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Orders</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {ordersLoading ? (
-              <div className="h-32 flex items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : orders.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-muted-foreground">
-                No orders placed
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left">
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Symbol
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Type
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Side
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Qty
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Price
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Filled
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Avg Price
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Status
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Placed At
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orders.map((order) => (
-                      <tr
+            {/* Orders Tab */}
+            {activeTab === "orders" && (
+              <div className="p-2">
+                {ordersLoading ? (
+                  <div className="h-32 flex items-center justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : orders.length === 0 ? (
+                  <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
+                    No orders placed
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {[...orders].reverse().map((order) => (
+                      <div
                         key={order.id}
-                        className="border-b last:border-0 hover:bg-accent/50"
+                        className="border rounded-md p-2 text-xs"
                       >
-                        <td className="py-2.5 font-medium">
-                          {order.exchange}:{order.tradingsymbol}
-                        </td>
-                        <td className="py-2.5 text-xs">
-                          {order.order_type}
-                        </td>
-                        <td className="py-2.5">
+                        <div className="flex items-center justify-between mb-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={cn(
+                                "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                                order.transaction_type === "BUY"
+                                  ? "bg-green-100 text-green-800"
+                                  : "bg-red-100 text-red-800"
+                              )}
+                            >
+                              {order.transaction_type}
+                            </span>
+                            <span className="font-medium">{order.tradingsymbol}</span>
+                            <span className="text-muted-foreground">x{order.quantity}</span>
+                          </div>
                           <span
                             className={cn(
-                              "inline-flex px-2 py-0.5 rounded text-xs font-medium",
-                              order.transaction_type === "BUY"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-red-100 text-red-800"
-                            )}
-                          >
-                            {order.transaction_type}
-                          </span>
-                        </td>
-                        <td className="py-2.5">{order.quantity}</td>
-                        <td className="py-2.5">
-                          {order.price != null
-                            ? formatCurrency(order.price)
-                            : "Market"}
-                        </td>
-                        <td className="py-2.5">
-                          {order.filled_quantity}/{order.quantity}
-                        </td>
-                        <td className="py-2.5">
-                          {order.average_price != null
-                            ? formatCurrency(order.average_price)
-                            : "--"}
-                        </td>
-                        <td className="py-2.5">
-                          <span
-                            className={cn(
-                              "inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize",
+                              "px-1.5 py-0.5 rounded text-[10px] font-medium capitalize",
                               order.status === "COMPLETE"
                                 ? "bg-green-100 text-green-800"
-                                : order.status === "REJECTED" ||
-                                  order.status === "CANCELLED"
+                                : order.status === "REJECTED" || order.status === "CANCELLED"
                                 ? "bg-red-100 text-red-800"
                                 : "bg-blue-100 text-blue-800"
                             )}
                           >
                             {order.status}
                           </span>
-                        </td>
-                        <td className="py-2.5 text-xs text-muted-foreground">
-                          {new Date(order.placed_at).toLocaleString()}
-                        </td>
-                      </tr>
+                        </div>
+                        <div className="flex items-center justify-between text-muted-foreground">
+                          <span>
+                            {order.order_type} @ {order.average_price != null ? formatCurrency(order.average_price) : "Market"}
+                          </span>
+                          <span>{new Date(order.placed_at).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             )}
-          </CardContent>
-        </Card>
-      )}
 
-      {/* Trades Tab */}
-      {activeTab === "trades" && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Trade Log</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {tradesLoading ? (
-              <div className="h-32 flex items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : trades.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-muted-foreground">
-                No trades recorded
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left">
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Symbol
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Side
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Qty
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Entry
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Exit
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        P&L
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        P&L %
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Charges
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Net P&L
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Entry Time
-                      </th>
-                      <th className="pb-3 font-medium text-muted-foreground">
-                        Exit Time
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.map((t) => (
-                      <tr
+            {/* Trades Tab */}
+            {activeTab === "trades" && (
+              <div className="p-2">
+                {tradesLoading ? (
+                  <div className="h-32 flex items-center justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : trades.length === 0 ? (
+                  <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
+                    No trades recorded
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {[...trades].reverse().map((t) => (
+                      <div
                         key={t.id}
-                        className="border-b last:border-0 hover:bg-accent/50"
+                        className="border rounded-md p-2 text-xs"
                       >
-                        <td className="py-2.5 font-medium">
-                          {t.exchange}:{t.tradingsymbol}
-                        </td>
-                        <td className="py-2.5">
+                        <div className="flex items-center justify-between mb-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={cn(
+                                "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                                t.side === "LONG" || t.side === "BUY"
+                                  ? "bg-green-100 text-green-800"
+                                  : "bg-red-100 text-red-800"
+                              )}
+                            >
+                              {t.side}
+                            </span>
+                            <span className="font-medium">{t.tradingsymbol}</span>
+                            <span className="text-muted-foreground">x{t.quantity}</span>
+                          </div>
                           <span
                             className={cn(
-                              "inline-flex px-2 py-0.5 rounded text-xs font-medium",
-                              t.side === "LONG" || t.side === "BUY"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-red-100 text-red-800"
+                              "font-semibold",
+                              t.net_pnl != null
+                                ? t.net_pnl >= 0
+                                  ? "text-green-600"
+                                  : "text-red-600"
+                                : ""
                             )}
                           >
-                            {t.side}
+                            {t.net_pnl != null ? formatCurrency(t.net_pnl) : "--"}
                           </span>
-                        </td>
-                        <td className="py-2.5">{t.quantity}</td>
-                        <td className="py-2.5">
-                          {formatCurrency(t.entry_price)}
-                        </td>
-                        <td className="py-2.5">
-                          {t.exit_price != null
-                            ? formatCurrency(t.exit_price)
-                            : "Open"}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2.5",
-                            t.pnl != null
-                              ? t.pnl >= 0
-                                ? "text-green-600"
-                                : "text-red-600"
-                              : ""
-                          )}
-                        >
-                          {t.pnl != null ? formatCurrency(t.pnl) : "--"}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2.5",
-                            t.pnl_percent != null
-                              ? t.pnl_percent >= 0
-                                ? "text-green-600"
-                                : "text-red-600"
-                              : ""
-                          )}
-                        >
-                          {t.pnl_percent != null
-                            ? formatPercent(t.pnl_percent)
-                            : "--"}
-                        </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {formatCurrency(t.charges)}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2.5 font-medium",
-                            t.net_pnl != null
-                              ? t.net_pnl >= 0
-                                ? "text-green-600"
-                                : "text-red-600"
-                              : ""
-                          )}
-                        >
-                          {t.net_pnl != null
-                            ? formatCurrency(t.net_pnl)
-                            : "--"}
-                        </td>
-                        <td className="py-2.5 text-xs text-muted-foreground">
-                          {new Date(t.entry_at).toLocaleString()}
-                        </td>
-                        <td className="py-2.5 text-xs text-muted-foreground">
-                          {t.exit_at
-                            ? new Date(t.exit_at).toLocaleString()
-                            : "--"}
-                        </td>
-                      </tr>
+                        </div>
+                        <div className="flex items-center justify-between text-muted-foreground">
+                          <span>
+                            {formatCurrency(t.entry_price)} &rarr;{" "}
+                            {t.exit_price != null ? formatCurrency(t.exit_price) : "Open"}
+                          </span>
+                          <span>
+                            {t.pnl_percent != null ? formatPercent(t.pnl_percent) : "--"}
+                          </span>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             )}
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
