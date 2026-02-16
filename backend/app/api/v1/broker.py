@@ -61,6 +61,9 @@ async def get_broker_status(
         except Exception as e:
             logger.warning(f"Kite token validation failed for user {current_user.id}: {e}")
             token_valid = False
+            # Mark token as expired now so the UI reflects reality
+            connection.token_expiry = datetime.now(timezone.utc)
+            await db.flush()
 
     login_url = None
     if not token_valid and connection.api_key:
