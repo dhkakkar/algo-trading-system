@@ -456,6 +456,17 @@ function IndicatorPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Helpers: IST offset for lightweight-charts (displays UTC, we fake IST)
+// ---------------------------------------------------------------------------
+const IST_OFFSET_SECS = 5 * 3600 + 30 * 60; // +5:30 in seconds
+
+function toChartTime(isoOrTs: string | number): number {
+  const ms = typeof isoOrTs === "string" ? new Date(isoOrTs).getTime() : isoOrTs * 1000;
+  // lightweight-charts renders timestamps as UTC — shift by IST offset so labels read correctly
+  return Math.floor(ms / 1000) + IST_OFFSET_SECS;
+}
+
+// ---------------------------------------------------------------------------
 // Live Candlestick Chart with Indicators
 // ---------------------------------------------------------------------------
 function LiveChart({
@@ -481,6 +492,10 @@ function LiveChart({
   const [chartTimeframe, setChartTimeframe] = useState(sessionTimeframe);
   const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+
+  // Track earliest loaded date for lazy-loading
+  const earliestDateRef = useRef<string>("");
+  const isLoadingMoreRef = useRef(false);
 
   // Primary symbol
   const primaryInstrument = instruments[0] || "";
@@ -646,19 +661,162 @@ function LiveChart({
             });
             cprLines.push(pl);
           };
-          addCPRLine(cpr.pivot, "P", INDICATOR_COLORS.cprPivot, 2);  // dashed
-          addCPRLine(cpr.tc, "TC", INDICATOR_COLORS.cprTC, 1);       // dotted
-          addCPRLine(cpr.bc, "BC", INDICATOR_COLORS.cprBC, 1);       // dotted
-          addCPRLine(cpr.r1, "R1", INDICATOR_COLORS.cprR1, 2);       // dashed
-          addCPRLine(cpr.r2, "R2", INDICATOR_COLORS.cprR2, 2);       // dashed
-          addCPRLine(cpr.s1, "S1", INDICATOR_COLORS.cprS1, 2);       // dashed
-          addCPRLine(cpr.s2, "S2", INDICATOR_COLORS.cprS2, 2);       // dashed
+          addCPRLine(cpr.pivot, "P", INDICATOR_COLORS.cprPivot, 2);
+          addCPRLine(cpr.tc, "TC", INDICATOR_COLORS.cprTC, 1);
+          addCPRLine(cpr.bc, "BC", INDICATOR_COLORS.cprBC, 1);
+          addCPRLine(cpr.r1, "R1", INDICATOR_COLORS.cprR1, 2);
+          addCPRLine(cpr.r2, "R2", INDICATOR_COLORS.cprR2, 2);
+          addCPRLine(cpr.s1, "S1", INDICATOR_COLORS.cprS1, 2);
+          addCPRLine(cpr.s2, "S2", INDICATOR_COLORS.cprS2, 2);
           (candleSeries as any).__cprLines = cprLines;
         }
       }
     },
     []
   );
+
+  // Process raw OHLCV API data into chart-ready arrays
+  const processOHLCV = useCallback(
+    (data: any[]): { candles: CandleData[]; volumes: VolumeData[]; rawVolumes: number[] } => {
+      const candleData: CandleData[] = data.map((d: any) => ({
+        time: toChartTime(d.time || d.timestamp),
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+      }));
+
+      const rawVolumeArr: number[] = data.map((d: any) => d.volume || 0);
+
+      const volumeData: VolumeData[] = data.map((d: any, i: number) => ({
+        time: candleData[i].time,
+        value: d.volume || 0,
+        color: d.close >= d.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      }));
+
+      // Deduplicate by time
+      const seen = new Set<number>();
+      const candles: CandleData[] = [];
+      const volumes: VolumeData[] = [];
+      const rawVolumes: number[] = [];
+      candleData.forEach((c, i) => {
+        if (!seen.has(c.time)) {
+          seen.add(c.time);
+          candles.push(c);
+          volumes.push(volumeData[i]);
+          rawVolumes.push(rawVolumeArr[i]);
+        }
+      });
+
+      candles.sort((a, b) => a.time - b.time);
+      volumes.sort((a, b) => a.time - b.time);
+      // Align raw volumes with sorted candles
+      const timeOrder = candles.map((c) => c.time);
+      const sortedRaw = timeOrder.map((t) => {
+        const idx = candles.findIndex((uc) => uc.time === t);
+        return rawVolumes[idx] || 0;
+      });
+
+      return { candles, volumes, rawVolumes: sortedRaw };
+    },
+    []
+  );
+
+  // Load more historical data when scrolling left
+  const loadMoreHistory = useCallback(async () => {
+    if (
+      isLoadingMoreRef.current ||
+      !chartRef.current ||
+      !candleSeriesRef.current ||
+      !volumeSeriesRef.current ||
+      !earliestDateRef.current
+    )
+      return;
+
+    isLoadingMoreRef.current = true;
+
+    try {
+      const toDate = new Date(earliestDateRef.current);
+      toDate.setDate(toDate.getDate() - 1);
+      const fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - (chartTimeframe === "1d" ? 365 : 30));
+      const fromStr = fromDate.toISOString().slice(0, 10);
+      const toStr = toDate.toISOString().slice(0, 10);
+
+      if (fromDate >= toDate) return;
+
+      const res = await apiClient.get(
+        `/market-data/ohlcv?symbol=${sym}&exchange=${exch}&from_date=${fromStr}&to_date=${toStr}&interval=${chartTimeframe}`
+      );
+
+      const newData = res.data || [];
+      if (newData.length === 0) return;
+
+      const { candles: newCandles, volumes: newVolumes, rawVolumes: newRawVolumes } =
+        processOHLCV(newData);
+
+      if (newCandles.length === 0) return;
+
+      // Merge: new older data + existing data
+      const existingCandles = rawCandlesRef.current;
+      const existingVolumes = rawVolumesRef.current;
+      const existingVolumeSeries = existingCandles.map((c, i) => ({
+        time: c.time,
+        value: existingVolumes[i] || 0,
+        color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      }));
+
+      // Filter out duplicates from new data
+      const existingTimes = new Set(existingCandles.map((c) => c.time));
+      const filteredCandles: CandleData[] = [];
+      const filteredVolumes: VolumeData[] = [];
+      const filteredRaw: number[] = [];
+      newCandles.forEach((c, i) => {
+        if (!existingTimes.has(c.time)) {
+          filteredCandles.push(c);
+          filteredVolumes.push(newVolumes[i]);
+          filteredRaw.push(newRawVolumes[i]);
+        }
+      });
+
+      if (filteredCandles.length === 0) return;
+
+      // Merge and sort
+      const allCandles = [...filteredCandles, ...existingCandles].sort((a, b) => a.time - b.time);
+      const allRawVolumes = [...filteredRaw, ...existingVolumes];
+      // Rebuild aligned volume array based on sorted candle order
+      const candleTimeToIdx = new Map<number, number>();
+      filteredCandles.forEach((c, i) => candleTimeToIdx.set(c.time, i));
+      existingCandles.forEach((c, i) => candleTimeToIdx.set(c.time, filteredCandles.length + i));
+      const mergedRawVolumes = allCandles.map((c) => {
+        const idx = candleTimeToIdx.get(c.time);
+        if (idx !== undefined && idx < filteredRaw.length) return filteredRaw[idx];
+        const exIdx = idx !== undefined ? idx - filteredCandles.length : -1;
+        return exIdx >= 0 ? existingVolumes[exIdx] : 0;
+      });
+
+      const allVolumeBars: VolumeData[] = allCandles.map((c, i) => ({
+        time: c.time,
+        value: mergedRawVolumes[i],
+        color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      }));
+
+      // Update chart series
+      candleSeriesRef.current.setData(allCandles as any[]);
+      volumeSeriesRef.current.setData(allVolumeBars as any[]);
+
+      rawCandlesRef.current = allCandles;
+      rawVolumesRef.current = mergedRawVolumes;
+      earliestDateRef.current = fromStr;
+
+      // Re-apply indicators with full data
+      applyIndicators(chartRef.current, candleSeriesRef.current, allCandles, mergedRawVolumes, indicators);
+    } catch {
+      // silently fail
+    } finally {
+      isLoadingMoreRef.current = false;
+    }
+  }, [sym, exch, chartTimeframe, processOHLCV, applyIndicators, indicators]);
 
   // Load historical candles and create chart
   useEffect(() => {
@@ -672,6 +830,7 @@ function LiveChart({
     fromDate.setDate(fromDate.getDate() - (chartTimeframe === "1d" ? 365 : 30));
     const fromStr = fromDate.toISOString().slice(0, 10);
     const toStr = today.toISOString().slice(0, 10);
+    earliestDateRef.current = fromStr;
 
     Promise.all([
       apiClient.get(
@@ -690,12 +849,15 @@ function LiveChart({
 
         const { createChart, ColorType } = lc;
 
+        const isDaily = chartTimeframe === "1d";
+
         const chart = createChart(chartContainerRef.current, {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
           layout: {
             background: { type: ColorType.Solid, color: "transparent" },
             textColor: "#9ca3af",
+            fontSize: 11,
           },
           grid: {
             vertLines: { color: "#1f2937" },
@@ -704,26 +866,15 @@ function LiveChart({
           crosshair: { mode: 0 },
           timeScale: {
             borderColor: "#374151",
-            timeVisible: true,
+            timeVisible: !isDaily,
             secondsVisible: false,
+            rightOffset: 5,
+            minBarSpacing: 3,
+            fixLeftEdge: false,
+            fixRightEdge: false,
           },
           rightPriceScale: {
             borderColor: "#374151",
-          },
-          localization: {
-            timeFormatter: (time: number) => {
-              const d = new Date(time * 1000);
-              if (chartTimeframe === "1d") {
-                return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
-              }
-              return d.toLocaleString("en-IN", {
-                day: "2-digit",
-                month: "short",
-                hour: "2-digit",
-                minute: "2-digit",
-                hour12: false,
-              });
-            },
           },
         });
 
@@ -747,44 +898,8 @@ function LiveChart({
 
         // Transform OHLCV data
         const data = ohlcvRes.data || [];
-        const candleData: CandleData[] = data.map((d: any) => ({
-          time: Math.floor(new Date(d.time || d.timestamp).getTime() / 1000),
-          open: d.open,
-          high: d.high,
-          low: d.low,
-          close: d.close,
-        }));
-
-        const rawVolumeArr: number[] = data.map((d: any) => d.volume || 0);
-
-        const volumeData: VolumeData[] = data.map((d: any, i: number) => ({
-          time: candleData[i].time,
-          value: d.volume || 0,
-          color: d.close >= d.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-        }));
-
-        // Deduplicate by time
-        const seen = new Set<number>();
-        const uniqueCandles: CandleData[] = [];
-        const uniqueVolumes: VolumeData[] = [];
-        const uniqueRawVolumes: number[] = [];
-        candleData.forEach((c, i) => {
-          if (!seen.has(c.time)) {
-            seen.add(c.time);
-            uniqueCandles.push(c);
-            uniqueVolumes.push(volumeData[i]);
-            uniqueRawVolumes.push(rawVolumeArr[i]);
-          }
-        });
-
-        uniqueCandles.sort((a, b) => a.time - b.time);
-        uniqueVolumes.sort((a, b) => a.time - b.time);
-        // Keep raw volumes aligned with sorted candles
-        const sortMap = uniqueCandles.map((c) => c.time);
-        const sortedRawVolumes = sortMap.map((t) => {
-          const idx = uniqueCandles.findIndex((uc) => uc.time === t);
-          return uniqueRawVolumes[idx] || 0;
-        });
+        const { candles: uniqueCandles, volumes: uniqueVolumes, rawVolumes: sortedRawVolumes } =
+          processOHLCV(data);
 
         candleSeries.setData(uniqueCandles as any[]);
         volumeSeries.setData(uniqueVolumes as any[]);
@@ -802,6 +917,15 @@ function LiveChart({
 
         // Apply current indicators
         applyIndicators(chart, candleSeries, uniqueCandles, sortedRawVolumes, indicators);
+
+        // Lazy-load: fetch more history when user scrolls to left edge
+        chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange: any) => {
+          if (!logicalRange) return;
+          // When user scrolls so that the leftmost visible bar index is < 10, load more
+          if (logicalRange.from < 10) {
+            loadMoreHistory();
+          }
+        });
 
         // Resize handler
         const handleResize = () => {
@@ -852,7 +976,7 @@ function LiveChart({
     const price = snapshot.prices[sym] || snapshot.prices[sym.toUpperCase()];
     if (!price) return;
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000) + IST_OFFSET_SECS;
     const lastCandle = lastCandleRef.current;
 
     // Determine candle interval in seconds
