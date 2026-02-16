@@ -63,9 +63,36 @@ async def set_platform_trading_mode(
 ):
     """Set platform-wide trading mode. When set to 'test', NO client can place live trades."""
     settings = await platform_service.set_platform_trading_mode(db, admin, data.mode)
+
+    # When switching to TEST mode, force-stop all running live trading sessions
+    stopped_sessions = 0
+    if data.mode == "test":
+        from app.models.trading_session import TradingSession
+        from app.services import trading_service
+
+        result = await db.execute(
+            select(TradingSession).where(
+                TradingSession.mode == "live",
+                TradingSession.status.in_(["running", "paused"]),
+            )
+        )
+        live_sessions = list(result.scalars().all())
+        for session in live_sessions:
+            runner = trading_service.get_active_runner(str(session.id))
+            if runner:
+                await runner.shutdown()
+                trading_service.unregister_runner(str(session.id))
+            await trading_service.update_session_status(db, session.id, "stopped")
+            stopped_sessions += 1
+
+    msg = f"Platform trading mode set to '{settings.trading_mode}'"
+    if stopped_sessions > 0:
+        msg += f". Stopped {stopped_sessions} live trading session(s)."
+
     return {
-        "message": f"Platform trading mode set to '{settings.trading_mode}'",
+        "message": msg,
         "trading_mode": settings.trading_mode,
+        "stopped_sessions": stopped_sessions,
     }
 
 

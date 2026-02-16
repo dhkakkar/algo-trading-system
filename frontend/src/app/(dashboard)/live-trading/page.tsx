@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useTradingStore } from "@/stores/trading-store";
+import apiClient from "@/lib/api-client";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Zap, Loader2, Play, Square, Pause, Trash2, AlertTriangle } from "lucide-react";
+import { Zap, Loader2, Play, Square, Pause, Trash2, AlertTriangle, ShieldAlert } from "lucide-react";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -48,8 +49,13 @@ export default function LiveTradingPage() {
     clearError,
   } = useTradingStore();
 
+  const [platformMode, setPlatformMode] = useState<string>("test");
+
   useEffect(() => {
     fetchSessions("live");
+    apiClient.get("/admin/platform/status").then((res) => {
+      setPlatformMode(res.data.platform_trading_mode);
+    }).catch(() => {});
   }, []);
 
   const handleStart = async (e: React.MouseEvent, id: string) => {
@@ -105,6 +111,19 @@ export default function LiveTradingPage() {
           </Link>
         </Button>
       </div>
+
+      {/* Platform Mode Banner */}
+      {platformMode === "test" && (
+        <div className="rounded-md border border-green-300 bg-green-50 p-4 flex items-start gap-3">
+          <ShieldAlert className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-green-800">Platform is in TEST MODE</p>
+            <p className="text-sm text-green-700 mt-1">
+              Live trading is disabled. No real orders can be placed. Switch the kill switch in the sidebar to enable live trading.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Warning Banner */}
       <div className="rounded-md border border-amber-300 bg-amber-50 p-4 flex items-start gap-3">
