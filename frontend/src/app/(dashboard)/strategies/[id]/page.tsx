@@ -23,6 +23,7 @@ import { InstrumentSearch } from "@/components/strategy/instrument-search";
 import { useStrategyStore } from "@/stores/strategy-store";
 import { useBacktestStore } from "@/stores/backtest-store";
 import { useTradingStore } from "@/stores/trading-store";
+import { useToastStore } from "@/stores/toast-store";
 
 const TIMEFRAME_OPTIONS = [
   { value: "1m", label: "1 Minute" },
@@ -59,6 +60,7 @@ export default function EditStrategyPage() {
 
   const { createBacktest } = useBacktestStore();
   const { createSession, startSession } = useTradingStore();
+  const { addToast } = useToastStore();
 
   const [isSaving, setIsSaving] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
@@ -177,6 +179,7 @@ export default function EditStrategyPage() {
     setIsDeleting(true);
     try {
       await deleteStrategy(id);
+      addToast("success", "Strategy deleted successfully");
       router.push("/strategies");
     } catch (err: any) {
       setSaveError(

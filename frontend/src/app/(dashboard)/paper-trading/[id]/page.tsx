@@ -221,9 +221,13 @@ export default function PaperTradingDetailPage() {
   const handlePause = async () => { await pauseSession(sessionId); };
   const handleResume = async () => { await resumeSession(sessionId); fetchSnapshot(sessionId); };
   const handleDelete = async () => {
-    if (confirm("Are you sure you want to delete this session?")) {
+    if (!confirm("Are you sure you want to delete this session? This cannot be undone.")) return;
+    try {
       await deleteSession(sessionId);
+      addToast("success", "Paper trading session deleted");
       router.push("/paper-trading");
+    } catch {
+      addToast("error", "Failed to delete session");
     }
   };
 

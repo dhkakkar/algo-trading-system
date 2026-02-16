@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useBacktestStore } from "@/stores/backtest-store";
+import { useToastStore } from "@/stores/toast-store";
 import { connectSocket, disconnectSocket, getSocket } from "@/lib/socket-client";
 import { formatCurrency, formatPercent, cn } from "@/lib/utils";
 import {
@@ -50,6 +51,17 @@ export default function BacktestsPage() {
     markCompleted,
     markFailed,
   } = useBacktestStore();
+  const { addToast } = useToastStore();
+
+  const handleDelete = useCallback(async (id: string) => {
+    if (!confirm("Are you sure you want to delete this backtest? This cannot be undone.")) return;
+    try {
+      await deleteBacktest(id);
+      addToast("success", "Backtest deleted successfully");
+    } catch {
+      addToast("error", "Failed to delete backtest");
+    }
+  }, [deleteBacktest, addToast]);
 
   useEffect(() => {
     fetchBacktests();
@@ -243,7 +255,7 @@ export default function BacktestsPage() {
                               bt.status === "failed" ||
                               bt.status === "cancelled") && (
                               <button
-                                onClick={() => deleteBacktest(bt.id)}
+                                onClick={() => handleDelete(bt.id)}
                                 className="text-red-400 hover:text-red-600"
                                 title="Delete"
                               >

@@ -238,9 +238,13 @@ export default function LiveTradingDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (confirm("Are you sure you want to delete this live trading session? This action cannot be undone.")) {
+    if (!confirm("Are you sure you want to delete this live trading session? This action cannot be undone.")) return;
+    try {
       await deleteSession(sessionId);
+      addToast("success", "Live trading session deleted");
       router.push("/live-trading");
+    } catch {
+      addToast("error", "Failed to delete session");
     }
   };
 

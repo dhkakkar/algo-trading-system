@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTradingStore } from "@/stores/trading-store";
+import { useToastStore } from "@/stores/toast-store";
 import apiClient from "@/lib/api-client";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,6 +49,7 @@ export default function LiveTradingPage() {
     deleteSession,
     clearError,
   } = useTradingStore();
+  const { addToast } = useToastStore();
 
   const [platformMode, setPlatformMode] = useState<string>("test");
 
@@ -89,8 +91,12 @@ export default function LiveTradingPage() {
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     e.preventDefault();
-    if (confirm("Are you sure you want to delete this live trading session? This action cannot be undone.")) {
+    if (!confirm("Are you sure you want to delete this live trading session? This action cannot be undone.")) return;
+    try {
       await deleteSession(id);
+      addToast("success", "Live trading session deleted");
+    } catch {
+      addToast("error", "Failed to delete session");
     }
   };
 

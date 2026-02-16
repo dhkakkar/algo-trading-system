@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTradingStore } from "@/stores/trading-store";
+import { useToastStore } from "@/stores/toast-store";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
   Card,
@@ -62,6 +63,7 @@ export default function PaperTradingPage() {
     deleteSession,
     clearError,
   } = useTradingStore();
+  const { addToast } = useToastStore();
 
   useEffect(() => {
     fetchSessions("paper");
@@ -98,8 +100,12 @@ export default function PaperTradingPage() {
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     e.preventDefault();
-    if (confirm("Are you sure you want to delete this session?")) {
+    if (!confirm("Are you sure you want to delete this session? This cannot be undone.")) return;
+    try {
       await deleteSession(id);
+      addToast("success", "Paper trading session deleted");
+    } catch {
+      addToast("error", "Failed to delete session");
     }
   };
 
