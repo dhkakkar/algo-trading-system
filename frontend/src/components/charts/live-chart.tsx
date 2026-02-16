@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import apiClient from "@/lib/api-client";
 import {
@@ -187,6 +187,19 @@ const TIMEFRAMES = [
 ];
 
 const STORAGE_KEY_TIMEFRAME = "chart_timeframe";
+const CHART_TIMEZONE_KEY = "chart_timezone";
+const DEFAULT_TIMEZONE = "Asia/Kolkata";
+
+function getTimezoneOffsetSeconds(timezone: string): number {
+  try {
+    const now = new Date();
+    const utcDate = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }));
+    const tzDate = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
+    return Math.round((tzDate.getTime() - utcDate.getTime()) / 1000);
+  } catch {
+    return 19800; // Default to IST (+5:30)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Indicator Panel
@@ -264,9 +277,9 @@ function IndicatorPanel({
 // ---------------------------------------------------------------------------
 // Time parsing
 // ---------------------------------------------------------------------------
-function toChartTime(timeStr: string, isDaily: boolean): string | number {
+function toChartTime(timeStr: string, isDaily: boolean, tzOffsetSeconds: number = 0): string | number {
   if (isDaily) return timeStr.slice(0, 10);
-  return Math.floor(new Date(timeStr).getTime() / 1000);
+  return Math.floor(new Date(timeStr).getTime() / 1000) + tzOffsetSeconds;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +316,12 @@ export default function LiveChart({
   });
   const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+
+  const timezoneOffset = useMemo(() => {
+    if (typeof window === "undefined") return 19800;
+    const tz = localStorage.getItem(CHART_TIMEZONE_KEY) || DEFAULT_TIMEZONE;
+    return getTimezoneOffsetSeconds(tz);
+  }, []);
 
   const earliestDateRef = useRef<string>("");
   const isLoadingMoreRef = useRef(false);
@@ -397,7 +416,7 @@ export default function LiveChart({
   const processOHLCV = useCallback(
     (data: any[], daily: boolean): { candles: CandleData[]; volumes: VolumeData[]; rawVolumes: number[] } => {
       const candleData: CandleData[] = data.map((d: any) => ({
-        time: toChartTime(d.time || d.timestamp, daily),
+        time: toChartTime(d.time || d.timestamp, daily, timezoneOffset),
         open: d.open, high: d.high, low: d.low, close: d.close,
       }));
       const rawVolumeArr: number[] = data.map((d: any) => d.volume || 0);
@@ -430,7 +449,7 @@ export default function LiveChart({
 
       return { candles, volumes, rawVolumes: sortedRaw };
     },
-    []
+    [timezoneOffset]
   );
 
   // Load more history on scroll
@@ -487,8 +506,12 @@ export default function LiveChart({
         color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
       }));
 
+      const visibleRange = chartRef.current?.timeScale().getVisibleRange();
       candleSeriesRef.current.setData(allCandles as any[]);
       volumeSeriesRef.current.setData(allVolumeBars as any[]);
+      if (visibleRange) {
+        chartRef.current?.timeScale().setVisibleRange(visibleRange);
+      }
       rawCandlesRef.current = allCandles;
       rawVolumesRef.current = mergedRawVolumes;
       earliestDateRef.current = fromStr;
@@ -597,7 +620,7 @@ export default function LiveChart({
     if (!price) return;
 
     const isDaily = chartTimeframe === "1d";
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000) + timezoneOffset;
     const lastCandle = lastCandleRef.current;
 
     const intervalSecs: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "1d": 86400 };
@@ -605,7 +628,7 @@ export default function LiveChart({
 
     if (lastCandle) {
       if (isDaily) {
-        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayStr = new Date(Date.now() + timezoneOffset * 1000).toISOString().slice(0, 10);
         if (lastCandle.time === todayStr) {
           const updated = { ...lastCandle, high: Math.max(lastCandle.high, price), low: Math.min(lastCandle.low, price), close: price };
           candleSeriesRef.current.update(updated);
@@ -630,7 +653,7 @@ export default function LiveChart({
         }
       }
     }
-  }, [snapshot, sym, chartTimeframe]);
+  }, [snapshot, sym, chartTimeframe, timezoneOffset]);
 
   // Broker invalid overlay
   if (brokerConnected === false) {

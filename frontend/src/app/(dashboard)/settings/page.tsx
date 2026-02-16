@@ -18,6 +18,18 @@ interface BrokerStatus {
   login_url: string | null;
 }
 
+const TIMEZONE_OPTIONS = [
+  { value: "Asia/Kolkata", label: "IST (India, +5:30)" },
+  { value: "UTC", label: "UTC (+0:00)" },
+  { value: "America/New_York", label: "US Eastern (ET)" },
+  { value: "America/Chicago", label: "US Central (CT)" },
+  { value: "Europe/London", label: "London (GMT/BST)" },
+  { value: "Asia/Tokyo", label: "Tokyo (JST, +9:00)" },
+  { value: "Asia/Singapore", label: "Singapore (SGT, +8:00)" },
+  { value: "Asia/Dubai", label: "Dubai (GST, +4:00)" },
+  { value: "Asia/Hong_Kong", label: "Hong Kong (HKT, +8:00)" },
+];
+
 export default function SettingsPage() {
   const { user } = useAuthStore();
 
@@ -43,6 +55,12 @@ export default function SettingsPage() {
   const [showSecret, setShowSecret] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<boolean | null>(null);
+
+  // Chart settings
+  const [chartTimezone, setChartTimezone] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("chart_timezone") || "Asia/Kolkata";
+    return "Asia/Kolkata";
+  });
 
   useEffect(() => {
     fetchBrokerStatus();
@@ -381,6 +399,35 @@ export default function SettingsPage() {
           {brokerMessage && (
             <p className="text-sm text-muted-foreground">{brokerMessage}</p>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Chart Settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Chart Settings</CardTitle>
+          <CardDescription>Configure chart display preferences</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="timezone">Chart Timezone</Label>
+            <select
+              id="timezone"
+              value={chartTimezone}
+              onChange={(e) => {
+                setChartTimezone(e.target.value);
+                localStorage.setItem("chart_timezone", e.target.value);
+              }}
+              className="w-full h-10 px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              {TIMEZONE_OPTIONS.map((tz) => (
+                <option key={tz.value} value={tz.value}>{tz.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Timezone used for chart x-axis timestamps. Changes apply on next chart load.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -57,6 +57,20 @@ const SCROLL_LOOKBACK: Record<string, number> = {
 };
 
 const SPEED_OPTIONS = [1, 2, 5, 10, 25, 50];
+
+const CHART_TIMEZONE_KEY = "chart_timezone";
+const DEFAULT_TIMEZONE = "Asia/Kolkata";
+
+function getTimezoneOffsetSeconds(timezone: string): number {
+  try {
+    const now = new Date();
+    const utcDate = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }));
+    const tzDate = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
+    return Math.round((tzDate.getTime() - utcDate.getTime()) / 1000);
+  } catch {
+    return 19800;
+  }
+}
 
 export default function ChartPage() {
   const searchParams = useSearchParams();
@@ -118,6 +132,11 @@ export default function ChartPage() {
   const replayIndexRef = useRef(0);
   const replayTimerRef = useRef<number | null>(null);
   const intervalRef = useRef(interval);
+  const timezoneOffset = useMemo(() => {
+    if (typeof window === "undefined") return 19800;
+    const tz = localStorage.getItem(CHART_TIMEZONE_KEY) || DEFAULT_TIMEZONE;
+    return getTimezoneOffsetSeconds(tz);
+  }, []);
 
   // Keep refs in sync
   useEffect(() => {
@@ -283,7 +302,7 @@ export default function ChartPage() {
 
         // Get the latest bar from the API
         const latestBar = bars[bars.length - 1];
-        const ts = Math.floor(new Date(latestBar.time).getTime() / 1000);
+        const ts = Math.floor(new Date(latestBar.time).getTime() / 1000) + timezoneOffset;
 
         // Update the last candle (or add new one) in-place
         candleSeriesRef.current.update({
@@ -331,7 +350,7 @@ export default function ChartPage() {
     const isDaily = intervalRef.current === "1d";
     const parseTime = (timeStr: string) => {
       if (isDaily) return timeStr.slice(0, 10);
-      return Math.floor(new Date(timeStr).getTime() / 1000);
+      return Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
     };
 
     const slice = dataRef.current.slice(0, index + 1);
@@ -448,8 +467,8 @@ export default function ChartPage() {
       if (isDaily) {
         return timeStr.slice(0, 10); // "YYYY-MM-DD"
       }
-      // For intraday, convert to unix timestamp (seconds)
-      return Math.floor(new Date(timeStr).getTime() / 1000);
+      // For intraday, convert to unix timestamp (seconds) + timezone offset
+      return Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
     };
 
     const candleData = data.map((bar) => ({
