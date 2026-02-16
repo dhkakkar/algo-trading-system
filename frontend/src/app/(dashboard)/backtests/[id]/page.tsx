@@ -17,8 +17,16 @@ import {
   Loader2,
   AlertTriangle,
   Download,
+  Settings2,
 } from "lucide-react";
 import type { BacktestTrade } from "@/types/backtest";
+import {
+  IndicatorConfig,
+  DEFAULT_INDICATORS,
+  CandleData,
+  IndicatorPanel,
+  applyIndicators,
+} from "@/components/charts/chart-indicators";
 
 // ---------------------------------------------------------------------------
 // Compute detailed trade statistics from the trades array (client-side)
@@ -500,6 +508,17 @@ export default function BacktestDetailPage() {
   const [chartSymbol, setChartSymbol] = useState<string>("");
   const [chartOHLCV, setChartOHLCV] = useState<any[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
+  const indicatorSeriesRef = useRef<Record<string, any>>({});
+  const [indicators, setIndicators] = useState<IndicatorConfig>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("chart_indicators");
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return DEFAULT_INDICATORS;
+  });
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
 
   // Compute detailed stats from trades
   const stats = useMemo(
@@ -750,17 +769,23 @@ export default function BacktestDetailPage() {
       .finally(() => setChartLoading(false));
   }, [activeTab, bt?.id, bt?.status, chartSymbol]);
 
+  // Persist indicator changes
+  useEffect(() => {
+    localStorage.setItem("chart_indicators", JSON.stringify(indicators));
+  }, [indicators]);
+
   // Render trade signal chart
   useEffect(() => {
     if (activeTab !== "chart" || !chartOHLCV.length || !tradeChartRef.current || !bt) return;
 
     let cleanup: (() => void) | undefined;
 
-    import("lightweight-charts").then(({ createChart, ColorType }) => {
+    import("lightweight-charts").then(({ createChart, ColorType, LineStyle }) => {
       if (!tradeChartRef.current) return;
       tradeChartRef.current.innerHTML = "";
 
       const isDaily = bt.timeframe === "1d";
+      const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
       const parseTime = (timeStr: string) => {
         if (isDaily) return timeStr.slice(0, 10);
@@ -784,6 +809,22 @@ export default function BacktestDetailPage() {
           borderColor: "#2a2e39",
           timeVisible: !isDaily,
           secondsVisible: false,
+          tickMarkFormatter: !isDaily
+            ? (time: number, tickMarkType: number) => {
+                const d = new Date(time * 1000);
+                const day = d.getUTCDate();
+                const mon = MONTHS[d.getUTCMonth()];
+                if (tickMarkType >= 3) {
+                  // Time-level tick: show date + time
+                  const h = String(d.getUTCHours()).padStart(2, "0");
+                  const m = String(d.getUTCMinutes()).padStart(2, "0");
+                  return `${day} ${mon} ${h}:${m}`;
+                }
+                if (tickMarkType === 2) return `${day} ${mon}`;
+                if (tickMarkType === 1) return `${mon} ${d.getUTCFullYear()}`;
+                return `${d.getUTCFullYear()}`;
+              }
+            : undefined,
         },
         rightPriceScale: { borderColor: "#2a2e39" },
       });
@@ -825,7 +866,7 @@ export default function BacktestDetailPage() {
         })) as any
       );
 
-      // Trade entry/exit markers
+      // Trade entry/exit markers + connecting lines
       const rawInst = chartSymbol || bt.instruments?.[0] || "";
       const parsed = parseInstrument(rawInst);
       const symbolTrades = trades.filter(
@@ -862,6 +903,28 @@ export default function BacktestDetailPage() {
       markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
       candleSeries.setMarkers(markers);
 
+      // Dotted lines connecting entry → exit for each trade
+      symbolTrades.forEach((t) => {
+        if (!t.exit_at || t.exit_price == null) return;
+        const isWin = (t.net_pnl ?? 0) >= 0;
+        const lineSeries = chart.addLineSeries({
+          color: isWin ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        lineSeries.setData([
+          { time: parseTime(t.entry_at), value: t.entry_price },
+          { time: parseTime(t.exit_at), value: t.exit_price },
+        ] as any);
+      });
+
+      // Apply indicators
+      const volumes = chartOHLCV.map((b: any) => Number(b.volume));
+      applyIndicators(chart, candleSeries, candleData as CandleData[], volumes, indicators, indicatorSeriesRef);
+
       chart.timeScale().fitContent();
       tradeChartObjRef.current = chart;
 
@@ -880,7 +943,7 @@ export default function BacktestDetailPage() {
     });
 
     return () => cleanup?.();
-  }, [activeTab, chartOHLCV, trades, chartSymbol]);
+  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators]);
 
   if (loading && !bt) {
     return (
@@ -1506,20 +1569,47 @@ export default function BacktestDetailPage() {
                 </div>
               )}
 
-              {/* Legend */}
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
-                  Entry
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
-                  Exit
-                </span>
-                <span className="text-muted-foreground/60">
-                  Numbers (#1, #2...) link matching entry-exit pairs
-                </span>
+              {/* Legend + Indicator toggle */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
+                    Entry
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
+                    Exit
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-6 border-t border-dashed border-green-500" />
+                    Win
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-6 border-t border-dashed border-red-500" />
+                    Loss
+                  </span>
+                  <span className="text-muted-foreground/60">
+                    (#1, #2...) link entry-exit pairs
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+                  className={cn(
+                    "p-1.5 rounded-md border transition-colors",
+                    showIndicatorPanel
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background text-muted-foreground border-border hover:text-foreground"
+                  )}
+                  title="Indicators"
+                >
+                  <Settings2 className="h-4 w-4" />
+                </button>
               </div>
+
+              {/* Indicator panel */}
+              {showIndicatorPanel && (
+                <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
+              )}
 
               <Card>
                 <CardContent className="pt-4">
