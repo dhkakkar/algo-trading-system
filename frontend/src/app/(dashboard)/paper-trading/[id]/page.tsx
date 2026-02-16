@@ -852,8 +852,7 @@ function LiveChart({
         const isDaily = chartTimeframe === "1d";
 
         const chart = createChart(chartContainerRef.current, {
-          width: chartContainerRef.current.clientWidth,
-          height: chartContainerRef.current.clientHeight,
+          autoSize: true,
           layout: {
             background: { type: ColorType.Solid, color: "transparent" },
             textColor: "#9ca3af",
@@ -870,8 +869,6 @@ function LiveChart({
             secondsVisible: false,
             rightOffset: 5,
             minBarSpacing: 3,
-            fixLeftEdge: false,
-            fixRightEdge: false,
           },
           rightPriceScale: {
             borderColor: "#374151",
@@ -927,22 +924,7 @@ function LiveChart({
           }
         });
 
-        // Resize handler
-        const handleResize = () => {
-          if (chartContainerRef.current && chartRef.current) {
-            chartRef.current.applyOptions({
-              width: chartContainerRef.current.clientWidth,
-              height: chartContainerRef.current.clientHeight,
-            });
-          }
-        };
-        window.addEventListener("resize", handleResize);
-
         setChartLoading(false);
-
-        return () => {
-          window.removeEventListener("resize", handleResize);
-        };
       })
       .catch(() => {
         setChartLoading(false);
@@ -1072,15 +1054,15 @@ function LiveChart({
       </div>
 
       {/* Chart area */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative min-h-0">
         {chartLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         )}
-        <div ref={chartContainerRef} className="w-full h-full" />
+        <div ref={chartContainerRef} className="absolute inset-0" />
         {!isRunning && !chartLoading && (
-          <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded">
+          <div className="absolute top-2 left-2 bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded z-10">
             Session not running — chart shows historical data only
           </div>
         )}
