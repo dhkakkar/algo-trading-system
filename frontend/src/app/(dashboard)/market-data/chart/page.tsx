@@ -10,13 +10,22 @@ import {
   SkipForward,
   RotateCcw,
   X,
+  Settings2,
 } from "lucide-react";
 import Link from "next/link";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import apiClient from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
+import {
+  IndicatorConfig,
+  DEFAULT_INDICATORS,
+  CandleData,
+  IndicatorPanel,
+  applyIndicators,
+} from "@/components/charts/chart-indicators";
 
 const INTERVAL_OPTIONS = [
   { value: "1m", label: "1m" },
@@ -115,6 +124,15 @@ export default function ChartPage() {
   const chartRef = useRef<any>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
+  const indicatorSeriesRef = useRef<Record<string, any>>({});
+  const rawCandlesRef = useRef<CandleData[]>([]);
+  const rawVolumesRef = useRef<number[]>([]);
+
+  // Indicator state
+  const [indicators, setIndicators] = useState<IndicatorConfig>(DEFAULT_INDICATORS);
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const indicatorsRef = useRef<IndicatorConfig>(DEFAULT_INDICATORS);
+  const activeCount = Object.values(indicators).filter((v) => v.enabled).length;
 
   // Infinite scroll refs
   const dataRef = useRef<OHLCVBar[]>([]);
@@ -146,6 +164,10 @@ export default function ChartPage() {
   useEffect(() => {
     intervalRef.current = interval;
   }, [interval]);
+
+  useEffect(() => {
+    indicatorsRef.current = indicators;
+  }, [indicators]);
 
   // Reset scroll state when key params change
   useEffect(() => {
@@ -371,6 +393,8 @@ export default function ChartPage() {
     volumeSeriesRef.current.setData(volumeData as any);
 
     if (chartRef.current) {
+      const sliceVolumes = dataRef.current.slice(0, index + 1).map((b) => b.volume);
+      applyIndicators(chartRef.current, candleSeriesRef.current, candleData as CandleData[], sliceVolumes, indicatorsRef.current, indicatorSeriesRef);
       chartRef.current.timeScale().scrollToRealTime();
     }
   }, []);
@@ -504,6 +528,10 @@ export default function ChartPage() {
       if (visibleRange) {
         chartRef.current.timeScale().setVisibleRange(visibleRange);
       }
+      // Update indicator data with the full range
+      rawCandlesRef.current = candleData as CandleData[];
+      rawVolumesRef.current = data.map((b) => b.volume);
+      applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
       return;
     }
     isScrollLoadRef.current = false;
@@ -568,6 +596,11 @@ export default function ChartPage() {
       chartRef.current = chart;
       candleSeriesRef.current = candleSeries;
       volumeSeriesRef.current = volumeSeries;
+      rawCandlesRef.current = candleData as CandleData[];
+      rawVolumesRef.current = data.map((b) => b.volume);
+
+      // Apply indicators
+      applyIndicators(chart, candleSeries, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
 
       // Infinite scroll: detect when user scrolls near the left edge
       chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange: any) => {
@@ -599,6 +632,12 @@ export default function ChartPage() {
       }
     };
   }, [data, interval]);
+
+  // Re-apply indicators when config changes
+  useEffect(() => {
+    if (!chartRef.current || !candleSeriesRef.current || rawCandlesRef.current.length === 0) return;
+    applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
+  }, [indicators]);
 
   if (!symbol) {
     return (
@@ -673,6 +712,28 @@ export default function ChartPage() {
                 {opt.label}
               </button>
             ))}
+          </div>
+
+          {/* Indicators button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                showIndicatorPanel || activeCount > 0
+                  ? "bg-primary/10 text-primary"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              )}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              Indicators
+              {activeCount > 0 && (
+                <span className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded-full leading-none">{activeCount}</span>
+              )}
+            </button>
+            {showIndicatorPanel && (
+              <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
+            )}
           </div>
 
           <div className="flex items-center gap-2">
