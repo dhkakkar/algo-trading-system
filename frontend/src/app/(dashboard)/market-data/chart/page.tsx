@@ -152,6 +152,7 @@ export default function ChartPage() {
   const earliestDateRef = useRef(fromDate);
   const loadingOlderRef = useRef(false);
   const noMoreDataRef = useRef(false);
+  const isScrollLoadRef = useRef(false);
   const loadOlderDataRef = useRef<() => Promise<void>>(undefined);
 
   // Replay state
@@ -292,34 +293,11 @@ export default function ChartPage() {
 
       if (newBars.length === 0) {
         noMoreDataRef.current = true;
-      } else if (chartRef.current && candleSeriesRef.current && volumeSeriesRef.current) {
+      } else {
         const merged = [...newBars, ...dataRef.current];
         earliestDateRef.current = newFromStr;
-        dataRef.current = merged;
-
-        // Update chart directly (bypassing React state avoids chart recreation)
-        const isDaily = intervalRef.current === "1d";
-        const parseTime = (timeStr: string) =>
-          isDaily ? timeStr.slice(0, 10) : Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
-
-        const candleData = merged.map((bar) => ({
-          time: parseTime(bar.time),
-          open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-        }));
-        const volumeData = merged.map((bar) => ({
-          time: parseTime(bar.time),
-          value: bar.volume,
-          color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-        }));
-
-        const visibleRange = chartRef.current.timeScale().getVisibleRange();
-        candleSeriesRef.current.setData(candleData as any);
-        volumeSeriesRef.current.setData(volumeData as any);
-        if (visibleRange) chartRef.current.timeScale().setVisibleRange(visibleRange);
-
-        rawCandlesRef.current = candleData as CandleData[];
-        rawVolumesRef.current = merged.map((b) => b.volume);
-        applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicatorsRef.current, indicatorSeriesRef);
+        isScrollLoadRef.current = true;
+        setData(merged);
       }
     } catch {
       // Silently fail for scroll loads
@@ -544,6 +522,28 @@ export default function ChartPage() {
       color: bar.close >= bar.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
     }));
 
+    // Scroll load: update series data in-place, preserve scroll position
+    if (
+      isScrollLoadRef.current &&
+      chartRef.current &&
+      candleSeriesRef.current &&
+      volumeSeriesRef.current
+    ) {
+      isScrollLoadRef.current = false;
+
+      const visibleRange = chartRef.current.timeScale().getVisibleRange();
+      candleSeriesRef.current.setData(candleData as any);
+      volumeSeriesRef.current.setData(volumeData as any);
+      if (visibleRange) {
+        chartRef.current.timeScale().setVisibleRange(visibleRange);
+      }
+      rawCandlesRef.current = candleData as CandleData[];
+      rawVolumesRef.current = data.map((b) => b.volume);
+      applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
+      return;
+    }
+    isScrollLoadRef.current = false;
+
     // Clean up old chart
     if (chartRef.current) {
       chartRef.current.remove();
@@ -634,7 +634,8 @@ export default function ChartPage() {
     });
 
     return () => {
-      if (chartRef.current) {
+      // Don't destroy chart during scroll loads — the scroll-load branch reuses it
+      if (chartRef.current && !isScrollLoadRef.current) {
         chartRef.current.remove();
         chartRef.current = null;
       }
