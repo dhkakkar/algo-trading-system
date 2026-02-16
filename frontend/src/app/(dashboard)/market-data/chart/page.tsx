@@ -66,13 +66,31 @@ export default function ChartPage() {
   const symbol = searchParams.get("symbol") || "";
   const exchange = searchParams.get("exchange") || "NSE";
 
-  const [interval, setInterval] = useState("1d");
+  const [interval, setInterval] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("md_chart_interval") || "1d";
+    return "1d";
+  });
   const [fromDate, setFromDate] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("md_chart_from");
+      if (saved) return saved;
+    }
     const d = new Date();
     d.setMonth(d.getMonth() - 3);
     return d.toISOString().slice(0, 10);
   });
-  const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [toDate, setToDate] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("md_chart_to");
+      if (saved) return saved;
+    }
+    return new Date().toISOString().slice(0, 10);
+  });
+
+  // Persist settings to localStorage
+  useEffect(() => { localStorage.setItem("md_chart_interval", interval); }, [interval]);
+  useEffect(() => { localStorage.setItem("md_chart_from", fromDate); }, [fromDate]);
+  useEffect(() => { localStorage.setItem("md_chart_to", toDate); }, [toDate]);
 
   const [data, setData] = useState<OHLCVBar[]>([]);
   const [loading, setLoading] = useState(false);
@@ -247,6 +265,15 @@ export default function ChartPage() {
     const pollLatest = async () => {
       try {
         const today = new Date().toISOString().slice(0, 10);
+
+        // Sync fresh data from Kite for superadmin
+        if (user?.is_superadmin) {
+          const kiteInterval = INTERVAL_TO_KITE[interval] || "day";
+          await apiClient.post("/admin/fetch-historical", {
+            symbol, exchange, from_date: today, to_date: today, interval: kiteInterval,
+          }, { _suppressToast: true } as any).catch(() => {});
+        }
+
         const res = await apiClient.get("/market-data/ohlcv", {
           params: { symbol, exchange, from_date: today, to_date: today, interval },
           _suppressToast: true,
@@ -288,12 +315,12 @@ export default function ChartPage() {
       }
     };
 
-    const timer = window.setInterval(pollLatest, 5000);
+    const timer = window.setInterval(pollLatest, 10000);
     // Also run once immediately
     pollLatest();
 
     return () => clearInterval(timer);
-  }, [symbol, exchange, interval, replayMode]);
+  }, [symbol, exchange, interval, replayMode, user?.is_superadmin]);
 
   // --- Replay functions ---
 
