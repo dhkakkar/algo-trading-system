@@ -124,6 +124,9 @@ export default function SettingsPage() {
   const [notifSaving, setNotifSaving] = useState(false);
   const [notifMessage, setNotifMessage] = useState("");
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
+  const [showTgToken, setShowTgToken] = useState(false);
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
+  const [showTwilioToken, setShowTwilioToken] = useState(false);
 
   useEffect(() => {
     fetchBrokerStatus();
@@ -605,13 +608,23 @@ export default function SettingsPage() {
             <>
               <div className="space-y-2">
                 <Label htmlFor="tgBotToken">Bot Token</Label>
-                <Input
-                  id="tgBotToken"
-                  type="password"
-                  value={tgBotToken}
-                  onChange={(e) => setTgBotToken(e.target.value)}
-                  placeholder={notifSettings?.telegram.bot_token_set ? "Token saved (leave blank to keep)" : "Your Telegram bot token"}
-                />
+                <div className="relative">
+                  <Input
+                    id="tgBotToken"
+                    type={showTgToken ? "text" : "password"}
+                    value={tgBotToken}
+                    onChange={(e) => setTgBotToken(e.target.value)}
+                    placeholder={notifSettings?.telegram.bot_token_set ? "Token saved (leave blank to keep)" : "Your Telegram bot token"}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowTgToken(!showTgToken)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showTgToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="tgChatId">Chat ID</Label>
@@ -681,13 +694,23 @@ export default function SettingsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="smtpPassword">Password</Label>
-                  <Input
-                    id="smtpPassword"
-                    type="password"
-                    value={smtpPassword}
-                    onChange={(e) => setSmtpPassword(e.target.value)}
-                    placeholder={notifSettings?.email.smtp_password_set ? "Saved (leave blank to keep)" : "App password"}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="smtpPassword"
+                      type={showSmtpPass ? "text" : "password"}
+                      value={smtpPassword}
+                      onChange={(e) => setSmtpPassword(e.target.value)}
+                      placeholder={notifSettings?.email.smtp_password_set ? "Saved (leave blank to keep)" : "App password"}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSmtpPass(!showSmtpPass)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </div>
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
@@ -749,13 +772,23 @@ export default function SettingsPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="twilioAuthToken">Auth Token</Label>
-                <Input
-                  id="twilioAuthToken"
-                  type="password"
-                  value={twilioAuthToken}
-                  onChange={(e) => setTwilioAuthToken(e.target.value)}
-                  placeholder={notifSettings?.sms.twilio_auth_token_set ? "Saved (leave blank to keep)" : "Twilio auth token"}
-                />
+                <div className="relative">
+                  <Input
+                    id="twilioAuthToken"
+                    type={showTwilioToken ? "text" : "password"}
+                    value={twilioAuthToken}
+                    onChange={(e) => setTwilioAuthToken(e.target.value)}
+                    placeholder={notifSettings?.sms.twilio_auth_token_set ? "Saved (leave blank to keep)" : "Twilio auth token"}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowTwilioToken(!showTwilioToken)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showTwilioToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
