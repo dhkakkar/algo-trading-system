@@ -9,6 +9,7 @@ from app.models.market_data import OHLCVData
 from app.models.instrument import Instrument
 from app.models.broker_connection import BrokerConnection
 from app.models.platform_settings import PlatformSettings
+from app.models.notification_settings import NotificationSettings
 
 __all__ = [
     "User",
@@ -23,4 +24,5 @@ __all__ = [
     "Instrument",
     "BrokerConnection",
     "PlatformSettings",
+    "NotificationSettings",
 ]

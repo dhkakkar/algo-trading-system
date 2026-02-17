@@ -13,6 +13,8 @@ from app.engine.paper.simulated_broker import SimulatedBroker
 from app.engine.backtest.portfolio import Portfolio
 from app.sdk.context import TradingContext
 from app.sdk.types import FilledOrder, PositionInfo
+from app.services.notification_service import fire_notification
+from app.schemas.notifications import NotificationEventType
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +281,12 @@ class PaperTradingRunner(BaseRunner):
             except Exception as exc:
                 self._logs.append(f"[ERROR] on_data: {type(exc).__name__}: {exc}")
                 logger.warning("Paper strategy on_data error: %s", exc)
+                if self._user_id:
+                    fire_notification(self._user_id, NotificationEventType.SESSION_CRASHED, {
+                        "session_id": self.session_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "mode": "paper",
+                    })
 
             # Process any new orders placed during on_data
             await self._process_orders()
@@ -403,6 +411,33 @@ class PaperTradingRunner(BaseRunner):
                 # Persist completed trade if a position was closed
                 if completed_trade:
                     await self._persist_trade(completed_trade)
+
+                # Fire notifications
+                if self._user_id:
+                    fire_notification(self._user_id, NotificationEventType.ORDER_FILLED, {
+                        "symbol": fill.symbol, "side": fill.side,
+                        "quantity": fill.quantity, "price": fill.fill_price,
+                        "order_id": fill.order_id, "mode": "paper",
+                    })
+                    if order.order_type in ("SL", "SL-M"):
+                        fire_notification(self._user_id, NotificationEventType.STOP_LOSS_TRIGGERED, {
+                            "symbol": fill.symbol, "side": fill.side,
+                            "quantity": fill.quantity, "price": fill.fill_price, "mode": "paper",
+                        })
+                    if completed_trade:
+                        fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                            "symbol": completed_trade["symbol"],
+                            "side": completed_trade["side"],
+                            "pnl": completed_trade.get("pnl"),
+                            "entry_price": completed_trade.get("entry_price"),
+                            "exit_price": completed_trade.get("exit_price"),
+                            "mode": "paper",
+                        })
+                    else:
+                        fire_notification(self._user_id, NotificationEventType.POSITION_OPENED, {
+                            "symbol": fill.symbol, "side": fill.side,
+                            "quantity": fill.quantity, "price": fill.fill_price, "mode": "paper",
+                        })
 
                 # Notify strategy
                 if self._strategy_instance:

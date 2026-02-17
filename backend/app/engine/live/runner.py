@@ -15,6 +15,8 @@ from app.engine.paper.runner import PaperTradingContext
 from app.engine.backtest.portfolio import Portfolio
 from app.sdk.context import TradingContext
 from app.sdk.types import FilledOrder, PositionInfo
+from app.services.notification_service import fire_notification
+from app.schemas.notifications import NotificationEventType
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +160,12 @@ class LiveTradingRunner(BaseRunner):
     """
 
     def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any],
-                 kite_client: Any):
+                 kite_client: Any, user_id=None):
         self.session_id = session_id
         self._strategy_code = strategy_code
         self._config = config
         self._instruments = config.get("instruments", [])
+        self._user_id = user_id
 
         self.executor = KiteExecutor(kite_client)
         self.risk_manager = RiskManager(config.get("risk_config", {}))
@@ -202,6 +205,12 @@ class LiveTradingRunner(BaseRunner):
             except Exception as exc:
                 self._logs.append(f"[ERROR] on_data: {type(exc).__name__}: {exc}")
                 logger.warning("Live strategy on_data error: %s", exc)
+                if self._user_id:
+                    fire_notification(self._user_id, NotificationEventType.SESSION_CRASHED, {
+                        "session_id": self.session_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "mode": "live",
+                    })
 
         # Update risk manager
         self.risk_manager.update_position_count(len(self.portfolio.get_all_positions()))
@@ -299,8 +308,35 @@ class LiveTradingRunner(BaseRunner):
                     commission=0,  # Kite charges separately
                     order_id=order_id,
                 )
-                self.portfolio.update_on_fill(fill)
+                completed_trade = self.portfolio.update_on_fill(fill)
                 completed_ids.append(order_id)
+
+                # Fire notifications
+                if self._user_id:
+                    fire_notification(self._user_id, NotificationEventType.ORDER_FILLED, {
+                        "symbol": info["symbol"], "side": info["side"],
+                        "quantity": fill.quantity, "price": fill.fill_price,
+                        "order_id": order_id, "mode": "live",
+                    })
+                    if info.get("order_type", "").upper() in ("SL", "SL-M"):
+                        fire_notification(self._user_id, NotificationEventType.STOP_LOSS_TRIGGERED, {
+                            "symbol": info["symbol"], "side": info["side"],
+                            "quantity": fill.quantity, "price": fill.fill_price, "mode": "live",
+                        })
+                    if completed_trade:
+                        fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                            "symbol": completed_trade["symbol"],
+                            "side": completed_trade["side"],
+                            "pnl": completed_trade.get("pnl"),
+                            "entry_price": completed_trade.get("entry_price"),
+                            "exit_price": completed_trade.get("exit_price"),
+                            "mode": "live",
+                        })
+                    else:
+                        fire_notification(self._user_id, NotificationEventType.POSITION_OPENED, {
+                            "symbol": info["symbol"], "side": info["side"],
+                            "quantity": fill.quantity, "price": fill.fill_price, "mode": "live",
+                        })
 
                 if self._strategy_instance and self._context:
                     try:
@@ -317,6 +353,13 @@ class LiveTradingRunner(BaseRunner):
             elif kite_status in ("REJECTED", "CANCELLED"):
                 completed_ids.append(order_id)
                 self._logs.append(f"[ORDER] {info['side']} {info['symbol']} {kite_status}: {status.get('status_message', '')}")
+                if self._user_id:
+                    fire_notification(self._user_id, NotificationEventType.ORDER_REJECTED, {
+                        "symbol": info["symbol"], "side": info["side"],
+                        "quantity": info["quantity"],
+                        "reason": status.get("status_message", kite_status),
+                        "mode": "live",
+                    })
 
         for oid in completed_ids:
             self._pending_broker_orders.pop(oid, None)

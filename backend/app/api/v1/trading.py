@@ -12,6 +12,8 @@ from app.schemas.trading import (
 )
 from app.services import trading_service
 from app.exceptions import BadRequestException
+from app.services.notification_service import fire_notification
+from app.schemas.notifications import NotificationEventType
 
 router = APIRouter(prefix="/trading", tags=["Trading"])
 
@@ -210,7 +212,7 @@ async def start_session(
             "timeframe": session.timeframe,
         }
 
-        runner = LiveTradingRunner(str(session.id), strategy.code, config, kite_client)
+        runner = LiveTradingRunner(str(session.id), strategy.code, config, kite_client, user_id=current_user.id)
 
         async def on_tick_update(r):
             snapshot = r.get_state_snapshot()
@@ -256,6 +258,9 @@ async def start_session(
             ticker.start(asyncio.get_event_loop())
 
     await trading_service.update_session_status(db, session_id, "running")
+    fire_notification(current_user.id, NotificationEventType.SESSION_STARTED, {
+        "session_id": str(session_id), "mode": session.mode,
+    })
     return {"message": "Session started", "status": "running"}
 
 
@@ -317,6 +322,9 @@ async def stop_session(
     else:
         await trading_service.update_session_status(db, session_id, "stopped")
 
+    fire_notification(current_user.id, NotificationEventType.SESSION_STOPPED, {
+        "session_id": str(session_id), "mode": session.mode,
+    })
     return {"message": "Session stopped", "status": "stopped"}
 
 
@@ -335,6 +343,9 @@ async def pause_session(
         runner.pause()
 
     await trading_service.update_session_status(db, session_id, "paused")
+    fire_notification(current_user.id, NotificationEventType.SESSION_PAUSED, {
+        "session_id": str(session_id), "mode": session.mode,
+    })
     return {"message": "Session paused", "status": "paused"}
 
 
@@ -353,6 +364,9 @@ async def resume_session(
         runner.resume()
 
     await trading_service.update_session_status(db, session_id, "running")
+    fire_notification(current_user.id, NotificationEventType.SESSION_RESUMED, {
+        "session_id": str(session_id), "mode": session.mode,
+    })
     return {"message": "Session resumed", "status": "running"}
 
 

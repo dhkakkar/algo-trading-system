@@ -22,3 +22,4 @@ class User(Base, UUIDMixin, TimestampMixin):
     orders = relationship("Order", back_populates="user", cascade="all, delete-orphan")
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
     broker_connections = relationship("BrokerConnection", back_populates="user", cascade="all, delete-orphan")
+    notification_settings = relationship("NotificationSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")

@@ -47,6 +47,9 @@ slowapi==0.1.9
 # HTTP client
 httpx==0.28.1
 
+# Email
+aiosmtplib==2.0.2
+
 # Utilities
 python-dateutil==2.9.0
 pytz==2024.2

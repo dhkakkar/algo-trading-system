@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { RefreshCw, CheckCircle2, XCircle, Eye, EyeOff } from "lucide-react";
+import { RefreshCw, CheckCircle2, XCircle, Eye, EyeOff, Send, Bell, Mail, MessageSquare, Smartphone } from "lucide-react";
 
 interface BrokerStatus {
   connected: boolean;
@@ -17,6 +17,46 @@ interface BrokerStatus {
   token_valid: boolean;
   login_url: string | null;
 }
+
+interface NotificationSettings {
+  telegram: { enabled: boolean; bot_token_set: boolean; chat_id: string | null };
+  email: {
+    enabled: boolean; smtp_host: string | null; smtp_port: number | null;
+    smtp_username: string | null; smtp_password_set: boolean; smtp_use_tls: boolean;
+    email_from: string | null; email_to: string | null;
+  };
+  sms: {
+    enabled: boolean; twilio_account_sid: string | null;
+    twilio_auth_token_set: boolean; twilio_from_number: string | null; sms_to_number: string | null;
+  };
+  event_channels: Record<string, string[]>;
+}
+
+const NOTIFICATION_EVENTS = [
+  { category: "Critical", events: [
+    { key: "order_filled", label: "Order Filled" },
+    { key: "order_rejected", label: "Order Rejected" },
+    { key: "stop_loss_triggered", label: "Stop-Loss Triggered" },
+    { key: "session_crashed", label: "Session Crashed" },
+    { key: "broker_disconnected", label: "Broker Disconnected" },
+    { key: "max_drawdown_breached", label: "Max Drawdown Breached" },
+  ]},
+  { category: "Important", events: [
+    { key: "session_started", label: "Session Started" },
+    { key: "session_stopped", label: "Session Stopped" },
+    { key: "position_opened", label: "Position Opened" },
+    { key: "position_closed", label: "Position Closed" },
+    { key: "daily_pnl_summary", label: "Daily P&L Summary" },
+  ]},
+  { category: "Info", events: [
+    { key: "session_paused", label: "Session Paused" },
+    { key: "session_resumed", label: "Session Resumed" },
+    { key: "target_profit_reached", label: "Target Profit Reached" },
+    { key: "no_trades_today", label: "No Trades Today" },
+  ]},
+];
+
+const CHANNELS = ["telegram", "email", "sms"] as const;
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Kolkata", label: "IST (India, +5:30)" },
@@ -62,8 +102,32 @@ export default function SettingsPage() {
     return "Asia/Kolkata";
   });
 
+  // Notification settings
+  const [notifSettings, setNotifSettings] = useState<NotificationSettings | null>(null);
+  const [tgEnabled, setTgEnabled] = useState(false);
+  const [tgBotToken, setTgBotToken] = useState("");
+  const [tgChatId, setTgChatId] = useState("");
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpUsername, setSmtpUsername] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpUseTls, setSmtpUseTls] = useState(true);
+  const [emailFrom, setEmailFrom] = useState("");
+  const [emailTo, setEmailTo] = useState("");
+  const [smsEnabled, setSmsEnabled] = useState(false);
+  const [twilioSid, setTwilioSid] = useState("");
+  const [twilioAuthToken, setTwilioAuthToken] = useState("");
+  const [twilioFromNum, setTwilioFromNum] = useState("");
+  const [smsToNum, setSmsToNum] = useState("");
+  const [eventChannels, setEventChannels] = useState<Record<string, string[]>>({});
+  const [notifSaving, setNotifSaving] = useState(false);
+  const [notifMessage, setNotifMessage] = useState("");
+  const [testingChannel, setTestingChannel] = useState<string | null>(null);
+
   useEffect(() => {
     fetchBrokerStatus();
+    fetchNotifSettings();
   }, []);
 
   const fetchBrokerStatus = async () => {
@@ -166,6 +230,94 @@ export default function SettingsPage() {
     } catch {
       setBrokerMessage("Failed to disconnect");
     }
+  };
+
+  const fetchNotifSettings = async () => {
+    try {
+      const res = await apiClient.get<NotificationSettings>("/notifications/settings");
+      const s = res.data;
+      setNotifSettings(s);
+      setTgEnabled(s.telegram.enabled);
+      setTgChatId(s.telegram.chat_id || "");
+      setEmailEnabled(s.email.enabled);
+      setSmtpHost(s.email.smtp_host || "");
+      setSmtpPort(String(s.email.smtp_port || 587));
+      setSmtpUsername(s.email.smtp_username || "");
+      setSmtpUseTls(s.email.smtp_use_tls);
+      setEmailFrom(s.email.email_from || "");
+      setEmailTo(s.email.email_to || "");
+      setSmsEnabled(s.sms.enabled);
+      setTwilioSid(s.sms.twilio_account_sid || "");
+      setTwilioFromNum(s.sms.twilio_from_number || "");
+      setSmsToNum(s.sms.sms_to_number || "");
+      setEventChannels(s.event_channels || {});
+    } catch {
+      // No settings yet
+    }
+  };
+
+  const handleSaveNotifications = async () => {
+    setNotifSaving(true);
+    setNotifMessage("");
+    try {
+      const payload: any = {
+        telegram: {
+          enabled: tgEnabled,
+          chat_id: tgChatId || null,
+          ...(tgBotToken ? { bot_token: tgBotToken } : {}),
+        },
+        email: {
+          enabled: emailEnabled,
+          smtp_host: smtpHost || null,
+          smtp_port: parseInt(smtpPort) || 587,
+          smtp_username: smtpUsername || null,
+          smtp_use_tls: smtpUseTls,
+          email_from: emailFrom || null,
+          email_to: emailTo || null,
+          ...(smtpPassword ? { smtp_password: smtpPassword } : {}),
+        },
+        sms: {
+          enabled: smsEnabled,
+          twilio_account_sid: twilioSid || null,
+          twilio_from_number: twilioFromNum || null,
+          sms_to_number: smsToNum || null,
+          ...(twilioAuthToken ? { twilio_auth_token: twilioAuthToken } : {}),
+        },
+        event_channels: eventChannels,
+      };
+      await apiClient.put("/notifications/settings", payload);
+      setNotifMessage("Notification settings saved");
+      setTgBotToken("");
+      setSmtpPassword("");
+      setTwilioAuthToken("");
+      await fetchNotifSettings();
+    } catch (err: any) {
+      setNotifMessage(err.response?.data?.detail || "Failed to save notification settings");
+    } finally {
+      setNotifSaving(false);
+    }
+  };
+
+  const handleTestNotification = async (channel: string) => {
+    setTestingChannel(channel);
+    try {
+      await apiClient.post("/notifications/test", { channel });
+      setNotifMessage(`Test ${channel} notification sent!`);
+    } catch (err: any) {
+      setNotifMessage(err.response?.data?.detail || `Test ${channel} failed`);
+    } finally {
+      setTestingChannel(null);
+    }
+  };
+
+  const toggleEventChannel = (eventKey: string, channel: string) => {
+    setEventChannels((prev) => {
+      const current = prev[eventKey] || [];
+      if (current.includes(channel)) {
+        return { ...prev, [eventKey]: current.filter((c) => c !== channel) };
+      }
+      return { ...prev, [eventKey]: [...current, channel] };
+    });
   };
 
   return (
@@ -428,6 +580,242 @@ export default function SettingsPage() {
               Timezone used for chart x-axis timestamps. Changes apply on next chart load.
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Telegram Notifications */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Send className="h-5 w-5" /> Telegram Notifications
+          </CardTitle>
+          <CardDescription>Receive alerts via Telegram bot</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={tgEnabled}
+              onChange={(e) => setTgEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span className="text-sm font-medium">Enable Telegram</span>
+          </label>
+          {tgEnabled && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="tgBotToken">Bot Token</Label>
+                <Input
+                  id="tgBotToken"
+                  type="password"
+                  value={tgBotToken}
+                  onChange={(e) => setTgBotToken(e.target.value)}
+                  placeholder={notifSettings?.telegram.bot_token_set ? "Token saved (leave blank to keep)" : "Your Telegram bot token"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="tgChatId">Chat ID</Label>
+                <Input
+                  id="tgChatId"
+                  value={tgChatId}
+                  onChange={(e) => setTgChatId(e.target.value)}
+                  placeholder="Your Telegram chat ID"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTestNotification("telegram")}
+                disabled={testingChannel === "telegram"}
+              >
+                <Send className="h-3.5 w-3.5 mr-1.5" />
+                {testingChannel === "telegram" ? "Sending..." : "Send Test"}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Email Notifications */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="h-5 w-5" /> Email Notifications
+          </CardTitle>
+          <CardDescription>Receive alerts via email (SMTP)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emailEnabled}
+              onChange={(e) => setEmailEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span className="text-sm font-medium">Enable Email</span>
+          </label>
+          {emailEnabled && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="smtpHost">SMTP Host</Label>
+                  <Input id="smtpHost" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.gmail.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="smtpPort">Port</Label>
+                  <Input id="smtpPort" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="587" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="smtpUsername">Username</Label>
+                  <Input id="smtpUsername" value={smtpUsername} onChange={(e) => setSmtpUsername(e.target.value)} placeholder="your@email.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="smtpPassword">Password</Label>
+                  <Input
+                    id="smtpPassword"
+                    type="password"
+                    value={smtpPassword}
+                    onChange={(e) => setSmtpPassword(e.target.value)}
+                    placeholder={notifSettings?.email.smtp_password_set ? "Saved (leave blank to keep)" : "App password"}
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={smtpUseTls} onChange={(e) => setSmtpUseTls(e.target.checked)} className="h-4 w-4 rounded border-input" />
+                <span className="text-sm">Use TLS</span>
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="emailFrom">From Address</Label>
+                  <Input id="emailFrom" value={emailFrom} onChange={(e) => setEmailFrom(e.target.value)} placeholder="alerts@yourdomain.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="emailTo">To Address</Label>
+                  <Input id="emailTo" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="you@email.com" />
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTestNotification("email")}
+                disabled={testingChannel === "email"}
+              >
+                <Mail className="h-3.5 w-3.5 mr-1.5" />
+                {testingChannel === "email" ? "Sending..." : "Send Test"}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* SMS Notifications */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Smartphone className="h-5 w-5" /> SMS Notifications
+          </CardTitle>
+          <CardDescription>Receive alerts via SMS (Twilio)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={smsEnabled}
+              onChange={(e) => setSmsEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span className="text-sm font-medium">Enable SMS</span>
+          </label>
+          {smsEnabled && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="twilioSid">Twilio Account SID</Label>
+                <Input id="twilioSid" value={twilioSid} onChange={(e) => setTwilioSid(e.target.value)} placeholder="ACxxxxxxxxxx" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="twilioAuthToken">Auth Token</Label>
+                <Input
+                  id="twilioAuthToken"
+                  type="password"
+                  value={twilioAuthToken}
+                  onChange={(e) => setTwilioAuthToken(e.target.value)}
+                  placeholder={notifSettings?.sms.twilio_auth_token_set ? "Saved (leave blank to keep)" : "Twilio auth token"}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="twilioFromNum">From Number</Label>
+                  <Input id="twilioFromNum" value={twilioFromNum} onChange={(e) => setTwilioFromNum(e.target.value)} placeholder="+1234567890" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="smsToNum">To Number</Label>
+                  <Input id="smsToNum" value={smsToNum} onChange={(e) => setSmsToNum(e.target.value)} placeholder="+91xxxxxxxxxx" />
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTestNotification("sms")}
+                disabled={testingChannel === "sms"}
+              >
+                <Smartphone className="h-3.5 w-3.5 mr-1.5" />
+                {testingChannel === "sms" ? "Sending..." : "Send Test"}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Notification Events */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Bell className="h-5 w-5" /> Notification Events
+          </CardTitle>
+          <CardDescription>Choose which events trigger notifications on each channel</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {NOTIFICATION_EVENTS.map((group) => (
+            <div key={group.category}>
+              <h4 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">
+                {group.category}
+              </h4>
+              <div className="space-y-1">
+                {/* Header row */}
+                <div className="grid grid-cols-[1fr_60px_60px_60px] gap-2 text-xs text-muted-foreground font-medium pb-1">
+                  <span>Event</span>
+                  <span className="text-center">TG</span>
+                  <span className="text-center">Email</span>
+                  <span className="text-center">SMS</span>
+                </div>
+                {group.events.map((evt) => (
+                  <div key={evt.key} className="grid grid-cols-[1fr_60px_60px_60px] gap-2 items-center py-1 border-t border-border/50">
+                    <span className="text-sm">{evt.label}</span>
+                    {CHANNELS.map((ch) => (
+                      <div key={ch} className="flex justify-center">
+                        <input
+                          type="checkbox"
+                          checked={(eventChannels[evt.key] || []).includes(ch)}
+                          onChange={() => toggleEventChannel(evt.key, ch)}
+                          className="h-4 w-4 rounded border-input cursor-pointer"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {notifMessage && (
+            <p className="text-sm text-muted-foreground">{notifMessage}</p>
+          )}
+
+          <Button onClick={handleSaveNotifications} disabled={notifSaving} className="w-full">
+            {notifSaving ? "Saving..." : "Save All Notification Settings"}
+          </Button>
         </CardContent>
       </Card>
     </div>
