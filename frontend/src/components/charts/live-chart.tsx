@@ -340,7 +340,7 @@ export default function LiveChart({
     applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
   }, [indicators]);
 
-  // Update last candle with live price from snapshot
+  // Update last candle with live price from snapshot + update indicators
   useEffect(() => {
     if (!snapshot || !candleSeriesRef.current || !sym) return;
 
@@ -354,34 +354,47 @@ export default function LiveChart({
     const intervalSecs: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "1d": 86400 };
     const interval = intervalSecs[chartTimeframe] || 3600;
 
+    let updatedCandle: CandleData | null = null;
+    let isNewCandle = false;
+
     if (lastCandle) {
       if (isDaily) {
         const todayStr = new Date(Date.now() + timezoneOffset * 1000).toISOString().slice(0, 10);
         if (lastCandle.time === todayStr) {
-          const updated = { ...lastCandle, high: Math.max(lastCandle.high, price), low: Math.min(lastCandle.low, price), close: price };
-          candleSeriesRef.current.update(updated);
-          lastCandleRef.current = updated;
+          updatedCandle = { ...lastCandle, high: Math.max(lastCandle.high, price), low: Math.min(lastCandle.low, price), close: price };
         } else {
-          const newCandle: CandleData = { time: todayStr as any, open: price, high: price, low: price, close: price };
-          candleSeriesRef.current.update(newCandle as any);
-          lastCandleRef.current = newCandle;
+          updatedCandle = { time: todayStr as any, open: price, high: price, low: price, close: price };
+          isNewCandle = true;
         }
       } else {
         const lastTime = typeof lastCandle.time === "number" ? lastCandle.time : 0;
         const candleEnd = lastTime + interval;
         if (now < candleEnd) {
-          const updated = { ...lastCandle, high: Math.max(lastCandle.high, price), low: Math.min(lastCandle.low, price), close: price };
-          candleSeriesRef.current.update(updated);
-          lastCandleRef.current = updated;
+          updatedCandle = { ...lastCandle, high: Math.max(lastCandle.high, price), low: Math.min(lastCandle.low, price), close: price };
         } else {
           const newTime = Math.floor(now / interval) * interval;
-          const newCandle: CandleData = { time: newTime, open: price, high: price, low: price, close: price };
-          candleSeriesRef.current.update(newCandle as any);
-          lastCandleRef.current = newCandle;
+          updatedCandle = { time: newTime, open: price, high: price, low: price, close: price };
+          isNewCandle = true;
         }
       }
     }
-  }, [snapshot, sym, chartTimeframe, timezoneOffset]);
+
+    if (updatedCandle) {
+      candleSeriesRef.current.update(updatedCandle as any);
+      lastCandleRef.current = updatedCandle;
+
+      // Keep rawCandlesRef in sync and reapply indicators
+      const candles = rawCandlesRef.current;
+      if (isNewCandle) {
+        candles.push(updatedCandle);
+      } else if (candles.length > 0) {
+        candles[candles.length - 1] = updatedCandle;
+      }
+      if (chartRef.current) {
+        applyIndicators(chartRef.current, candleSeriesRef.current, candles, rawVolumesRef.current, indicators, indicatorSeriesRef);
+      }
+    }
+  }, [snapshot, sym, chartTimeframe, timezoneOffset, indicators]);
 
   // Broker invalid overlay
   if (brokerConnected === false) {

@@ -5,11 +5,22 @@ import { X } from "lucide-react";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+export interface CPRConfig {
+  enabled: boolean;
+  pivot: boolean;
+  tc: boolean;
+  bc: boolean;
+  r1: boolean;
+  r2: boolean;
+  s1: boolean;
+  s2: boolean;
+}
+
 export interface IndicatorConfig {
   emaFast: { enabled: boolean; period: number };
   emaSlow: { enabled: boolean; period: number };
   sma: { enabled: boolean; period: number };
-  cpr: { enabled: boolean };
+  cpr: CPRConfig;
   vwap: { enabled: boolean };
   bollinger: { enabled: boolean; period: number; stdDev: number };
 }
@@ -18,7 +29,7 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
   emaFast: { enabled: false, period: 9 },
   emaSlow: { enabled: false, period: 21 },
   sma: { enabled: false, period: 20 },
-  cpr: { enabled: false },
+  cpr: { enabled: false, pivot: true, tc: true, bc: true, r1: true, r2: true, s1: true, s2: true },
   vwap: { enabled: false },
   bollinger: { enabled: false, period: 20, stdDev: 2 },
 };
@@ -260,6 +271,30 @@ export function IndicatorPanel({
           <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.cprPivot }}>CPR (Pivot, S/R)</span>
           <span className="text-[10px] text-muted-foreground">Auto</span>
         </div>
+        {config.cpr.enabled && (
+          <div className="ml-6 grid grid-cols-4 gap-x-2 gap-y-1">
+            {([
+              ["pivot", "Pivot", INDICATOR_COLORS.cprPivot],
+              ["tc", "TC", INDICATOR_COLORS.cprTC],
+              ["bc", "BC", INDICATOR_COLORS.cprBC],
+              ["r1", "R1", INDICATOR_COLORS.cprR1],
+              ["r2", "R2", INDICATOR_COLORS.cprR2],
+              ["s1", "S1", INDICATOR_COLORS.cprS1],
+              ["s2", "S2", INDICATOR_COLORS.cprS2],
+            ] as const).map(([key, label, color]) => (
+              <label key={key} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={(config.cpr as any)[key]}
+                  onChange={() => onChange({ ...config, cpr: { ...config.cpr, [key]: !(config.cpr as any)[key] } })}
+                  className="rounded border-input h-3 w-3"
+                  style={{ accentColor: color }}
+                />
+                <span className="text-[10px]" style={{ color }}>{label}</span>
+              </label>
+            ))}
+          </div>
+        )}
         {/* VWAP */}
         <div className="flex items-center gap-2">
           <input type="checkbox" checked={config.vwap.enabled} onChange={() => toggle("vwap")} className="rounded border-input h-3.5 w-3.5 accent-pink-500" />
@@ -285,6 +320,28 @@ export function IndicatorPanel({
 // ---------------------------------------------------------------------------
 // Apply Indicators to Chart
 // ---------------------------------------------------------------------------
+
+/** Get or create a line series, reusing an existing one to avoid flicker. */
+function getOrCreateLine(
+  chart: any,
+  seriesRef: { current: Record<string, any> },
+  key: string,
+  opts: Record<string, any>,
+): any {
+  if (seriesRef.current[key]) return seriesRef.current[key];
+  const series = chart.addLineSeries({ priceLineVisible: false, lastValueVisible: false, ...opts });
+  seriesRef.current[key] = series;
+  return series;
+}
+
+/** Remove a series by key if it exists. */
+function removeSeries(chart: any, seriesRef: { current: Record<string, any> }, key: string) {
+  if (seriesRef.current[key]) {
+    try { chart.removeSeries(seriesRef.current[key]); } catch {}
+    delete seriesRef.current[key];
+  }
+}
+
 export function applyIndicators(
   chart: any,
   candleSeries: any,
@@ -293,74 +350,85 @@ export function applyIndicators(
   config: IndicatorConfig,
   seriesRef: { current: Record<string, any> }
 ) {
-  // Remove existing indicator series
-  for (const [, series] of Object.entries(seriesRef.current)) {
-    try { chart.removeSeries(series); } catch {}
-  }
-  seriesRef.current = {};
-
   if (candles.length === 0) return;
 
   const closes = candles.map((c) => c.close);
   const times = candles.map((c) => c.time);
+  const toTimeSeries = (vals: (number | null)[]) =>
+    vals.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean);
 
+  // --- EMA Fast ---
   if (config.emaFast.enabled) {
-    const emaData = calcEMA(closes, config.emaFast.period);
-    const series = chart.addLineSeries({ color: INDICATOR_COLORS.emaFast, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-    series.setData(emaData.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.emaFast = series;
+    getOrCreateLine(chart, seriesRef, "emaFast", { color: INDICATOR_COLORS.emaFast, lineWidth: 1.5 })
+      .setData(toTimeSeries(calcEMA(closes, config.emaFast.period)));
+  } else {
+    removeSeries(chart, seriesRef, "emaFast");
   }
+
+  // --- EMA Slow ---
   if (config.emaSlow.enabled) {
-    const emaData = calcEMA(closes, config.emaSlow.period);
-    const series = chart.addLineSeries({ color: INDICATOR_COLORS.emaSlow, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-    series.setData(emaData.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.emaSlow = series;
+    getOrCreateLine(chart, seriesRef, "emaSlow", { color: INDICATOR_COLORS.emaSlow, lineWidth: 1.5 })
+      .setData(toTimeSeries(calcEMA(closes, config.emaSlow.period)));
+  } else {
+    removeSeries(chart, seriesRef, "emaSlow");
   }
+
+  // --- SMA ---
   if (config.sma.enabled) {
-    const smaData = calcSMA(closes, config.sma.period);
-    const series = chart.addLineSeries({ color: INDICATOR_COLORS.sma, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-    series.setData(smaData.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.sma = series;
+    getOrCreateLine(chart, seriesRef, "sma", { color: INDICATOR_COLORS.sma, lineWidth: 1.5 })
+      .setData(toTimeSeries(calcSMA(closes, config.sma.period)));
+  } else {
+    removeSeries(chart, seriesRef, "sma");
   }
+
+  // --- VWAP ---
   if (config.vwap.enabled) {
-    const vwapData = calcVWAP(candles, volumes);
-    const series = chart.addLineSeries({ color: INDICATOR_COLORS.vwap, lineWidth: 1.5, lineStyle: 0, priceLineVisible: false, lastValueVisible: false });
-    series.setData(vwapData.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.vwap = series;
+    getOrCreateLine(chart, seriesRef, "vwap", { color: INDICATOR_COLORS.vwap, lineWidth: 1.5, lineStyle: 0 })
+      .setData(toTimeSeries(calcVWAP(candles, volumes)));
+  } else {
+    removeSeries(chart, seriesRef, "vwap");
   }
+
+  // --- Bollinger Bands ---
   if (config.bollinger.enabled) {
     const bb = calcBollinger(closes, config.bollinger.period, config.bollinger.stdDev);
-    const upperSeries = chart.addLineSeries({ color: INDICATOR_COLORS.bollingerUpper, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
-    upperSeries.setData(bb.upper.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.bollingerUpper = upperSeries;
-    const middleSeries = chart.addLineSeries({ color: INDICATOR_COLORS.bollingerMiddle, lineWidth: 1, lineStyle: 1, priceLineVisible: false, lastValueVisible: false });
-    middleSeries.setData(bb.middle.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.bollingerMiddle = middleSeries;
-    const lowerSeries = chart.addLineSeries({ color: INDICATOR_COLORS.bollingerLower, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
-    lowerSeries.setData(bb.lower.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean));
-    seriesRef.current.bollingerLower = lowerSeries;
+    getOrCreateLine(chart, seriesRef, "bollingerUpper", { color: INDICATOR_COLORS.bollingerUpper, lineWidth: 1, lineStyle: 2 })
+      .setData(toTimeSeries(bb.upper));
+    getOrCreateLine(chart, seriesRef, "bollingerMiddle", { color: INDICATOR_COLORS.bollingerMiddle, lineWidth: 1, lineStyle: 1 })
+      .setData(toTimeSeries(bb.middle));
+    getOrCreateLine(chart, seriesRef, "bollingerLower", { color: INDICATOR_COLORS.bollingerLower, lineWidth: 1, lineStyle: 2 })
+      .setData(toTimeSeries(bb.lower));
+  } else {
+    removeSeries(chart, seriesRef, "bollingerUpper");
+    removeSeries(chart, seriesRef, "bollingerMiddle");
+    removeSeries(chart, seriesRef, "bollingerLower");
   }
+
+  // --- CPR ---
+  const cprLevels: { field: string; key: string; color: string; dash: boolean }[] = [
+    { field: "pivot", key: "cpr_pivot", color: INDICATOR_COLORS.cprPivot, dash: false },
+    { field: "tc", key: "cpr_tc", color: INDICATOR_COLORS.cprTC, dash: true },
+    { field: "bc", key: "cpr_bc", color: INDICATOR_COLORS.cprBC, dash: true },
+    { field: "r1", key: "cpr_r1", color: INDICATOR_COLORS.cprR1, dash: true },
+    { field: "r2", key: "cpr_r2", color: INDICATOR_COLORS.cprR2, dash: true },
+    { field: "s1", key: "cpr_s1", color: INDICATOR_COLORS.cprS1, dash: true },
+    { field: "s2", key: "cpr_s2", color: INDICATOR_COLORS.cprS2, dash: true },
+  ];
   if (config.cpr.enabled) {
     const cpr = calcCPR(candles);
     if (cpr) {
-      const addCPRLine = (data: CPRLevelData[], color: string, key: string, dash: boolean) => {
-        const series = chart.addLineSeries({
-          color,
-          lineWidth: 1,
-          lineStyle: dash ? 2 : 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        series.setData(data);
-        seriesRef.current[`cpr_${key}`] = series;
-      };
-      addCPRLine(cpr.pivot, INDICATOR_COLORS.cprPivot, "pivot", false);
-      addCPRLine(cpr.tc, INDICATOR_COLORS.cprTC, "tc", true);
-      addCPRLine(cpr.bc, INDICATOR_COLORS.cprBC, "bc", true);
-      addCPRLine(cpr.r1, INDICATOR_COLORS.cprR1, "r1", true);
-      addCPRLine(cpr.r2, INDICATOR_COLORS.cprR2, "r2", true);
-      addCPRLine(cpr.s1, INDICATOR_COLORS.cprS1, "s1", true);
-      addCPRLine(cpr.s2, INDICATOR_COLORS.cprS2, "s2", true);
+      for (const lvl of cprLevels) {
+        if ((config.cpr as any)[lvl.field]) {
+          getOrCreateLine(chart, seriesRef, lvl.key, { color: lvl.color, lineWidth: 1, lineStyle: lvl.dash ? 2 : 1 })
+            .setData((cpr as any)[lvl.field]);
+        } else {
+          removeSeries(chart, seriesRef, lvl.key);
+        }
+      }
+    } else {
+      cprLevels.forEach((l) => removeSeries(chart, seriesRef, l.key));
     }
+  } else {
+    cprLevels.forEach((l) => removeSeries(chart, seriesRef, l.key));
   }
 }

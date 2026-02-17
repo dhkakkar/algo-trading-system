@@ -393,6 +393,7 @@ export default function ChartPage() {
 
         // Also update the data array so replay/scroll don't lose it
         const existing = dataRef.current;
+        const updatedCandle: CandleData = { time: ts, open: latestBar.open, high: latestBar.high, low: latestBar.low, close: latestBar.close };
         if (existing.length > 0) {
           const lastTime = existing[existing.length - 1].time;
           const latestTime = latestBar.time;
@@ -401,6 +402,21 @@ export default function ChartPage() {
           } else if (new Date(latestTime) > new Date(lastTime)) {
             existing.push(latestBar);
           }
+        }
+
+        // Update rawCandlesRef and reapply indicators with latest data
+        const candles = rawCandlesRef.current;
+        if (candles.length > 0) {
+          const lastCandleTime = candles[candles.length - 1].time;
+          if (lastCandleTime === ts) {
+            candles[candles.length - 1] = updatedCandle;
+          } else if (ts > lastCandleTime) {
+            candles.push(updatedCandle);
+            rawVolumesRef.current.push(latestBar.volume);
+          }
+        }
+        if (chartRef.current && candleSeriesRef.current) {
+          applyIndicators(chartRef.current, candleSeriesRef.current, candles, rawVolumesRef.current, indicatorsRef.current, indicatorSeriesRef);
         }
       } catch {
         // Silently ignore polling errors
