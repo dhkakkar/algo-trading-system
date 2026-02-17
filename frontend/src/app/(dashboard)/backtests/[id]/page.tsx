@@ -507,7 +507,9 @@ export default function BacktestDetailPage() {
   const tradeChartObjRef = useRef<any>(null);
   const equityChartObjRef = useRef<any>(null);
   const drawdownChartObjRef = useRef<any>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "performance" | "trades" | "chart">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "performance" | "trades" | "chart" | "logs">("overview");
+  const [logs, setLogs] = useState<{ level: string; source: string; message: string; timestamp: string }[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const [chartSymbol, setChartSymbol] = useState<string>("");
   const [chartOHLCV, setChartOHLCV] = useState<any[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
@@ -586,6 +588,17 @@ export default function BacktestDetailPage() {
       socket.off("backtest_error");
     };
   }, [backtestId]);
+
+  // Fetch logs when switching to logs tab
+  useEffect(() => {
+    if (activeTab !== "logs" || !bt || (bt.status !== "completed" && bt.status !== "failed")) return;
+    setLogsLoading(true);
+    apiClient
+      .get(`/backtests/${backtestId}/logs`)
+      .then((res) => setLogs(res.data || []))
+      .catch(() => setLogs([]))
+      .finally(() => setLogsLoading(false));
+  }, [activeTab, bt?.id, bt?.status]);
 
   // Helper: convert date strings to UNIX timestamps, deduplicate, sort
   const prepareTimeseriesData = (
@@ -1195,7 +1208,7 @@ export default function BacktestDetailPage() {
           {/* Tab Navigation */}
           <div className="border-b">
             <nav className="flex space-x-8">
-              {(["overview", "performance", "trades", "chart"] as const).map((tab) => (
+              {(["overview", "performance", "trades", "chart", "logs"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -1212,7 +1225,9 @@ export default function BacktestDetailPage() {
                     ? "Performance Summary"
                     : tab === "trades"
                     ? `Trade Log (${trades.length})`
-                    : "Trade Chart"}
+                    : tab === "chart"
+                    ? "Trade Chart"
+                    : `Logs (${logs.length})`}
                 </button>
               ))}
             </nav>
@@ -1843,6 +1858,81 @@ export default function BacktestDetailPage() {
                 </Card>
               )}
             </div>
+          )}
+
+          {/* ============================================================ */}
+          {/* LOGS TAB */}
+          {/* ============================================================ */}
+          {activeTab === "logs" && (
+            <Card>
+              <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                <CardTitle className="text-base">Execution Logs</CardTitle>
+                <button
+                  onClick={() => {
+                    setLogsLoading(true);
+                    apiClient
+                      .get(`/backtests/${backtestId}/logs`)
+                      .then((res) => setLogs(res.data || []))
+                      .catch(() => setLogs([]))
+                      .finally(() => setLogsLoading(false));
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Refresh
+                </button>
+              </CardHeader>
+              <CardContent>
+                {logsLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : logs.length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground text-sm">
+                    No logs available. Logs are generated when a backtest runs.
+                  </div>
+                ) : (
+                  <div className="max-h-[600px] overflow-y-auto space-y-1">
+                    {logs.map((log, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-3 py-1.5 px-2 rounded text-[13px] hover:bg-accent/30 font-mono"
+                      >
+                        <span
+                          className={cn(
+                            "shrink-0 px-1.5 py-0.5 rounded text-[11px] font-semibold",
+                            log.level === "ERROR"
+                              ? "bg-red-500/20 text-red-400"
+                              : log.level === "WARNING"
+                              ? "bg-yellow-500/20 text-yellow-400"
+                              : "bg-blue-500/20 text-blue-400"
+                          )}
+                        >
+                          {log.level}
+                        </span>
+                        <span className="shrink-0 text-muted-foreground text-[11px] min-w-[60px]">
+                          {log.source}
+                        </span>
+                        <span className="flex-1 text-foreground break-all">
+                          {log.message}
+                        </span>
+                        <span className="shrink-0 text-muted-foreground text-[11px] whitespace-nowrap">
+                          {log.timestamp
+                            ? new Date(log.timestamp).toLocaleString("en-IN", {
+                                month: "short",
+                                day: "2-digit",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit",
+                                hour12: false,
+                              })
+                            : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           )}
         </>
       )}

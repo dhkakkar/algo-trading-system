@@ -160,6 +160,7 @@ async def _run_backtest(backtest_id: str):
                 avg_trade_pnl=metrics.get("avg_trade_pnl"),
                 equity_curve=equity_curve,
                 drawdown_curve=drawdown_curve,
+                logs=results.get("logs", []),
             )
 
             # Save trades to Trade table

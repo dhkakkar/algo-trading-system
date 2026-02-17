@@ -37,6 +37,7 @@ class Backtest(Base, UUIDMixin, TimestampMixin):
 
     equity_curve: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     drawdown_curve: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    logs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

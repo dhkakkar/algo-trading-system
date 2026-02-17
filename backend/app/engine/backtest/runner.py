@@ -140,6 +140,7 @@ class BacktestContext(TradingContext):
             else str(order.timestamp),
         })
 
+        self._runner._add_log("INFO", f"BUY order queued: {symbol} x{quantity} @ {price or 'MARKET'} ({order_type})", "strategy")
         logger.debug("BUY order queued: %s x%d @ %s (%s)", symbol, quantity, price or "MARKET", order_id)
         return order_id
 
@@ -189,6 +190,7 @@ class BacktestContext(TradingContext):
             else str(order.timestamp),
         })
 
+        self._runner._add_log("INFO", f"SELL order queued: {symbol} x{quantity} @ {price or 'MARKET'} ({order_type})", "strategy")
         logger.debug("SELL order queued: %s x%d @ %s (%s)", symbol, quantity, price or "MARKET", order_id)
         return order_id
 
@@ -364,8 +366,22 @@ class BacktestRunner(BaseRunner):
         # Pending orders that could not be filled and carry forward
         self._pending_orders: list[OrderEvent] = []
 
-        # Logs collected during the run
-        self._logs: list[str] = []
+        # Structured logs collected during the run
+        self._logs: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # Structured logging helper
+    # ------------------------------------------------------------------
+
+    def _add_log(self, level: str, message: str, source: str = "system"):
+        """Append a structured log entry."""
+        ts = self.data_handler.current_timestamp if self.data_handler else datetime.now()
+        self._logs.append({
+            "level": level,
+            "source": source,
+            "message": message,
+            "timestamp": ts.isoformat() if isinstance(ts, datetime) else str(ts),
+        })
 
     # ------------------------------------------------------------------
     # BaseRunner interface (async wrappers)
@@ -444,6 +460,7 @@ class BacktestRunner(BaseRunner):
             return await self._run_internal(ohlcv_data, progress_callback)
         except Exception as exc:
             logger.exception("Backtest %s failed: %s", self.backtest_id, exc)
+            self._add_log("ERROR", f"Backtest failed: {type(exc).__name__}: {exc}", "runner")
             return {
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
@@ -478,13 +495,14 @@ class BacktestRunner(BaseRunner):
 
         total_bars = self.data_handler.total_bars
         if total_bars == 0:
+            self._add_log("WARNING", "No data available for the specified instruments and date range.", "runner")
             return {
                 "status": "completed",
                 "metrics": {},
                 "equity_curve": [],
                 "trades": [],
                 "orders": [],
-                "logs": ["No data available for the specified instruments and date range."],
+                "logs": self._logs,
                 "warning": "No OHLCV data found",
             }
 
@@ -494,7 +512,14 @@ class BacktestRunner(BaseRunner):
         params = self._config.get("parameters", {})
         self._context = BacktestContext(runner=self, params=params)
 
-        # Capture log messages from the strategy
+        instruments_str = ", ".join(
+            i.get("symbol", i) if isinstance(i, dict) else str(i) for i in self._instruments
+        )
+        self._add_log("INFO", f"Backtest started — {total_bars} bars, instruments: {instruments_str}, "
+                       f"capital: {self._config.get('initial_capital', 100000)}, "
+                       f"timeframe: {self._config.get('timeframe', '1d')}", "runner")
+
+        # Capture log messages from the strategy (print() and ctx.log())
         log_handler = _ListLogHandler(self._logs)
         self._context._logger.addHandler(log_handler)
         self._context._logger.setLevel(logging.DEBUG)
@@ -502,7 +527,12 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         # 4. Call strategy.on_init()
         # ----------------------------------------------------------
-        strategy_instance.on_init(self._context)
+        try:
+            strategy_instance.on_init(self._context)
+            self._add_log("INFO", "Strategy on_init() completed", "runner")
+        except Exception as exc:
+            self._add_log("ERROR", f"on_init() raised: {type(exc).__name__}: {exc}", "strategy")
+            raise
 
         # ----------------------------------------------------------
         # 5. Main event loop: iterate over bars
@@ -519,9 +549,10 @@ class BacktestRunner(BaseRunner):
             try:
                 strategy_instance.on_data(self._context)
             except Exception as exc:
-                self._logs.append(
-                    f"[ERROR] on_data raised at bar {bar_index} "
-                    f"({timestamp}): {type(exc).__name__}: {exc}"
+                self._add_log(
+                    "ERROR",
+                    f"on_data raised at bar {bar_index} ({timestamp}): {type(exc).__name__}: {exc}",
+                    "strategy",
                 )
                 logger.warning(
                     "Strategy on_data error at bar %d: %s", bar_index, exc,
@@ -549,6 +580,10 @@ class BacktestRunner(BaseRunner):
         final_ts = self.data_handler.current_timestamp or datetime.now()
         closed = self.portfolio.close_all_positions(final_prices, final_ts)
         if closed:
+            for pos in closed:
+                symbol = pos.get("symbol", "?")
+                pnl = pos.get("pnl", 0)
+                self._add_log("INFO", f"Force-closed position {symbol} at end of backtest — P&L: {pnl:.2f}", "runner")
             logger.info(
                 "Force-closed %d positions at end of backtest", len(closed),
             )
@@ -561,8 +596,9 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         try:
             strategy_instance.on_stop(self._context)
+            self._add_log("INFO", "Strategy on_stop() completed", "runner")
         except Exception as exc:
-            self._logs.append(f"[ERROR] on_stop raised: {type(exc).__name__}: {exc}")
+            self._add_log("ERROR", f"on_stop raised: {type(exc).__name__}: {exc}", "strategy")
 
         # ----------------------------------------------------------
         # 8. Calculate metrics
@@ -575,6 +611,19 @@ class BacktestRunner(BaseRunner):
             trades=self.portfolio.trades,
             start_date=start_date,
             end_date=end_date,
+        )
+
+        # Summary log
+        total_trades = metrics.get("total_trades", 0)
+        total_ret = metrics.get("total_return", 0)
+        sharpe = metrics.get("sharpe_ratio", 0)
+        max_dd = metrics.get("max_drawdown", 0)
+        self._add_log(
+            "INFO",
+            f"Backtest completed — {total_trades} trades, "
+            f"return: {total_ret * 100:.2f}%, Sharpe: {sharpe:.2f}, "
+            f"max DD: {max_dd * 100:.2f}%",
+            "runner",
         )
 
         # Clean up log handler
@@ -634,8 +683,8 @@ class BacktestRunner(BaseRunner):
                 "map": map,
                 "max": max,
                 "min": min,
-                "print": lambda *args, **kw: self._logs.append(
-                    " ".join(str(a) for a in args)
+                "print": lambda *args, **kw: self._add_log(
+                    "INFO", " ".join(str(a) for a in args), "strategy"
                 ),
                 "range": range,
                 "reversed": reversed,
@@ -762,6 +811,22 @@ class BacktestRunner(BaseRunner):
                 # Update portfolio
                 completed_trade = self.portfolio.update_on_fill(fill)
 
+                self._add_log(
+                    "INFO",
+                    f"Order filled: {fill.side} {fill.symbol} x{fill.quantity} @ {fill.fill_price:.2f} "
+                    f"(commission: {fill.commission:.2f})",
+                    "runner",
+                )
+
+                if completed_trade is not None:
+                    pnl = completed_trade.get("pnl", 0)
+                    net_pnl = completed_trade.get("net_pnl", 0)
+                    self._add_log(
+                        "INFO",
+                        f"Trade closed: {fill.symbol} — P&L: {pnl:.2f}, Net P&L: {net_pnl:.2f}",
+                        "runner",
+                    )
+
                 # Notify strategy of the fill
                 if completed_trade is not None:
                     try:
@@ -776,9 +841,7 @@ class BacktestRunner(BaseRunner):
                         )
                         self._strategy_instance.on_order_fill(self._context, filled_order)
                     except Exception as exc:
-                        self._logs.append(
-                            f"[ERROR] on_order_fill raised: {type(exc).__name__}: {exc}"
-                        )
+                        self._add_log("ERROR", f"on_order_fill raised: {type(exc).__name__}: {exc}", "strategy")
 
                 logger.debug(
                     "Filled %s %s x%d @ %.2f (commission=%.2f)",
@@ -796,6 +859,7 @@ class BacktestRunner(BaseRunner):
                         if rec["order_id"] == order.order_id:
                             rec["status"] = "rejected"
                             break
+                    self._add_log("WARNING", f"Market order for {order.symbol} rejected — could not fill at bar {current_bar_index}", "runner")
                     logger.warning(
                         "Market order for %s could not be filled at bar %d",
                         order.symbol, current_bar_index,
@@ -846,15 +910,21 @@ def _safe_import(name: str, *args, **kwargs):
 
 
 class _ListLogHandler(logging.Handler):
-    """A logging handler that appends formatted messages to a list."""
+    """A logging handler that appends structured log entries to a list."""
 
-    def __init__(self, log_list: list[str]) -> None:
+    def __init__(self, log_list: list[dict]) -> None:
         super().__init__()
         self._logs = log_list
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            self._logs.append(msg)
+            level_map = {logging.DEBUG: "INFO", logging.INFO: "INFO", logging.WARNING: "WARNING", logging.ERROR: "ERROR"}
+            self._logs.append({
+                "level": level_map.get(record.levelno, "INFO"),
+                "source": "strategy",
+                "message": msg,
+                "timestamp": datetime.now().isoformat(),
+            })
         except Exception:
             pass

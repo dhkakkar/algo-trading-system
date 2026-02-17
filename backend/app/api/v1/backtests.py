@@ -106,6 +106,17 @@ async def get_backtest_trades(
     ]
 
 
+@router.get("/{backtest_id}/logs")
+async def get_backtest_logs(
+    backtest_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get execution logs for a backtest."""
+    backtest = await backtest_service.get_backtest(db, backtest_id, current_user.id)
+    return backtest.logs or []
+
+
 @router.post("/{backtest_id}/cancel")
 async def cancel_backtest(
     backtest_id: uuid.UUID,
