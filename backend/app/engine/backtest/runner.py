@@ -18,8 +18,11 @@ from __future__ import annotations
 import logging
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
+
+# Indian Standard Time (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 from app.engine.backtest.data_handler import HistoricalDataHandler
 from app.engine.backtest.execution_handler import SimulatedExecutionHandler
@@ -91,14 +94,16 @@ class BacktestContext(TradingContext):
     # ------------------------------------------------------------------
 
     def _is_time_locked(self) -> bool:
-        """Check if the current bar falls within any time lock window."""
+        """Check if the current bar falls within any time lock window (IST)."""
         locks = getattr(self._runner, "_time_locks", [])
         if not locks:
             return False
         ts = self._runner.data_handler.current_timestamp
         if not ts or not hasattr(ts, "hour"):
             return False
-        bar_time = (ts.hour, ts.minute)
+        # Convert to IST for comparison
+        ts_ist = _to_ist(ts)
+        bar_time = (ts_ist.hour, ts_ist.minute)
         for (sh, sm), (eh, em) in locks:
             if (sh, sm) <= bar_time < (eh, em):
                 return True
@@ -605,8 +610,9 @@ class BacktestRunner(BaseRunner):
 
             # 5a-ii. Intraday EOD square-off
             if eod_time and hasattr(timestamp, "hour"):
-                bar_time = (timestamp.hour, timestamp.minute)
-                bar_date = timestamp.date() if hasattr(timestamp, "date") else None
+                ts_ist = _to_ist(timestamp)
+                bar_time = (ts_ist.hour, ts_ist.minute)
+                bar_date = ts_ist.date()
                 if bar_time >= eod_time and bar_date != _last_eod_date:
                     if self.portfolio.positions:
                         prices = self.data_handler.get_current_prices()
@@ -954,6 +960,13 @@ class BacktestRunner(BaseRunner):
 # ======================================================================
 # Helpers
 # ======================================================================
+
+def _to_ist(ts: datetime) -> datetime:
+    """Convert a datetime to IST. If naive, assume UTC."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(IST)
+
 
 def _safe_import(name: str, *args, **kwargs):
     """
