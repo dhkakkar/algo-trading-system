@@ -181,7 +181,7 @@ const RSI_MEAN_REVERSION_TEMPLATE = `class RSIMeanReversion(Strategy):
 const EMA_CPR_TEMPLATE = `import math
 
 
-def _norm_cdf(x):
+def norm_cdf(x):
     if x > 6.0:
         return 1.0
     if x < -6.0:
@@ -194,18 +194,18 @@ def _norm_cdf(x):
     return 1.0 - p if x > 0 else p
 
 
-def _bs_delta(spot, strike, tte_years, vol, r=0.07, option_type="CE"):
+def bs_delta(spot, strike, tte_years, vol, r=0.07, option_type="CE"):
     if tte_years <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
         if option_type == "CE":
             return 1.0 if spot >= strike else 0.0
         return -1.0 if spot <= strike else 0.0
     d1 = (math.log(spot / strike) + (r + 0.5 * vol ** 2) * tte_years) / (vol * math.sqrt(tte_years))
     if option_type == "CE":
-        return _norm_cdf(d1)
-    return _norm_cdf(d1) - 1.0
+        return norm_cdf(d1)
+    return norm_cdf(d1) - 1.0
 
 
-def _historical_vol(closes, period=20):
+def historical_vol(closes, period=20):
     if len(closes) < period + 1:
         return 0.15
     log_rets = [math.log(closes[i] / closes[i - 1])
@@ -287,7 +287,7 @@ class NiftyEMACPRStrategy(Strategy):
         ctx.log("EMA+CPR Options Selling init: underlying=" + self.symbol
                 + " lots=" + str(self.num_lots) + " target_delta=" + str(self.target_delta))
 
-    def _find_option_by_delta(self, ctx, spot, option_type, closes_list):
+    def find_option_by_delta(self, ctx, spot, option_type, closes_list):
         expiry = ctx.get_nearest_expiry(self.symbol)
         if expiry is None:
             ctx.log("WARNING: No expiry found")
@@ -299,7 +299,7 @@ class NiftyEMACPRStrategy(Strategy):
         options = [o for o in chain if o["option_type"] == option_type]
         if not options:
             return None
-        vol = _historical_vol(closes_list)
+        vol = historical_vol(closes_list)
         bar = ctx.get_current_bar(self.symbol)
         if bar and hasattr(bar.get("timestamp"), "date"):
             bar_date = bar["timestamp"].date()
@@ -311,7 +311,7 @@ class NiftyEMACPRStrategy(Strategy):
         best_diff = float("inf")
         best_delta = 0.0
         for opt in options:
-            delta = _bs_delta(spot, opt["strike"], tte_years, vol, option_type=option_type)
+            delta = bs_delta(spot, opt["strike"], tte_years, vol, option_type=option_type)
             diff = abs(abs(delta) - self.target_delta)
             if diff < best_diff:
                 best_diff = diff
@@ -322,7 +322,7 @@ class NiftyEMACPRStrategy(Strategy):
                     + " strike=" + str(best["strike"]) + " delta=" + str(round(best_delta, 3)))
         return best
 
-    def _exit_held_option(self, ctx, reason):
+    def exit_held_option(self, ctx, reason):
         if self.held_option:
             qty = self.num_lots * self.held_lot_size
             ctx.buy(self.held_option, qty, exchange="NFO", product="MIS")
@@ -382,7 +382,7 @@ class NiftyEMACPRStrategy(Strategy):
         bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < bc
 
         if self.bullish_trigger or self.bearish_trigger:
-            self.bars_since_trigger += 1
+            self.bars_since_trigger = self.bars_since_trigger + 1
             self.recent_highs.append(cur_high)
             self.recent_lows.append(cur_low)
 
@@ -422,7 +422,7 @@ class NiftyEMACPRStrategy(Strategy):
         if (self.bullish_trigger and not self.in_long
                 and not self.block_long and before_cutoff
                 and cur_close > self.trigger_high):
-            opt = self._find_option_by_delta(ctx, cur_close, "PE", closes_list)
+            opt = self.find_option_by_delta(ctx, cur_close, "PE", closes_list)
             if opt:
                 qty = self.num_lots * opt.get("lot_size", 25)
                 self.held_lot_size = opt.get("lot_size", 25)
@@ -443,7 +443,7 @@ class NiftyEMACPRStrategy(Strategy):
         if (self.bearish_trigger and not self.in_short
                 and not self.block_short and before_cutoff
                 and cur_close < self.trigger_low):
-            opt = self._find_option_by_delta(ctx, cur_close, "CE", closes_list)
+            opt = self.find_option_by_delta(ctx, cur_close, "CE", closes_list)
             if opt:
                 qty = self.num_lots * opt.get("lot_size", 25)
                 self.held_lot_size = opt.get("lot_size", 25)
@@ -480,7 +480,7 @@ class NiftyEMACPRStrategy(Strategy):
                     ctx.log("TSL step=" + str(self.tsl_step) + " | SL=" + str(round(self.current_sl, 2)))
             if cur_close <= self.current_sl:
                 reason = "TSL" if self.tsl_active else "Initial SL"
-                self._exit_held_option(ctx, "LONG " + reason)
+                self.exit_held_option(ctx, "LONG " + reason)
                 ctx.log("LONG EXIT (" + reason + ") @ " + str(round(cur_close, 2)))
                 if self.tsl_active:
                     self.block_long = True
@@ -506,7 +506,7 @@ class NiftyEMACPRStrategy(Strategy):
                     ctx.log("TSL step=" + str(self.tsl_step) + " | SL=" + str(round(self.current_sl, 2)))
             if cur_close >= self.current_sl:
                 reason = "TSL" if self.tsl_active else "Initial SL"
-                self._exit_held_option(ctx, "SHORT " + reason)
+                self.exit_held_option(ctx, "SHORT " + reason)
                 ctx.log("SHORT EXIT (" + reason + ") @ " + str(round(cur_close, 2)))
                 if self.tsl_active:
                     self.block_short = True
@@ -515,11 +515,11 @@ class NiftyEMACPRStrategy(Strategy):
         # Time cutoff 3:10 PM
         if not before_cutoff:
             if self.in_long:
-                self._exit_held_option(ctx, "Cutoff 3:10 PM")
+                self.exit_held_option(ctx, "Cutoff 3:10 PM")
                 ctx.log("LONG EXIT (Cutoff) @ " + str(round(cur_close, 2)))
                 self.reset_position()
             if self.in_short:
-                self._exit_held_option(ctx, "Cutoff 3:10 PM")
+                self.exit_held_option(ctx, "Cutoff 3:10 PM")
                 ctx.log("SHORT EXIT (Cutoff) @ " + str(round(cur_close, 2)))
                 self.reset_position()
 
