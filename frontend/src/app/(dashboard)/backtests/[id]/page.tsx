@@ -921,6 +921,83 @@ export default function BacktestDetailPage() {
         ] as any);
       });
 
+      // CPR levels (Pivot, TC, BC) from previous day's HLC
+      if (!isDaily) {
+        // Group bars by date
+        const dayMap: Record<string, { high: number; low: number; close: number }> = {};
+        chartOHLCV.forEach((bar: any) => {
+          const dateStr = bar.time.slice(0, 10);
+          if (!dayMap[dateStr]) {
+            dayMap[dateStr] = { high: -Infinity, low: Infinity, close: 0 };
+          }
+          const h = Number(bar.high);
+          const l = Number(bar.low);
+          if (h > dayMap[dateStr].high) dayMap[dateStr].high = h;
+          if (l < dayMap[dateStr].low) dayMap[dateStr].low = l;
+          dayMap[dateStr].close = Number(bar.close); // last bar's close
+        });
+
+        const sortedDates = Object.keys(dayMap).sort();
+
+        // Build CPR data points: each day uses previous day's HLC
+        const pivotData: any[] = [];
+        const tcData: any[] = [];
+        const bcData: any[] = [];
+
+        for (let di = 1; di < sortedDates.length; di++) {
+          const prevDay = dayMap[sortedDates[di - 1]];
+          const pivot = (prevDay.high + prevDay.low + prevDay.close) / 3;
+          const bc = (prevDay.high + prevDay.low) / 2;
+          const tc = 2 * pivot - bc;
+
+          // Add CPR level for every bar on this day
+          const curDate = sortedDates[di];
+          chartOHLCV.forEach((bar: any) => {
+            if (bar.time.slice(0, 10) === curDate) {
+              const t = parseTime(bar.time);
+              pivotData.push({ time: t, value: pivot });
+              tcData.push({ time: t, value: tc });
+              bcData.push({ time: t, value: bc });
+            }
+          });
+        }
+
+        if (pivotData.length > 0) {
+          const pivotLine = chart.addLineSeries({
+            color: "rgba(156,163,175,0.7)",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            title: "Pivot",
+          });
+          pivotLine.setData(pivotData);
+
+          const tcLine = chart.addLineSeries({
+            color: "rgba(34,197,94,0.6)",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            title: "TC",
+          });
+          tcLine.setData(tcData);
+
+          const bcLine = chart.addLineSeries({
+            color: "rgba(239,68,68,0.6)",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            title: "BC",
+          });
+          bcLine.setData(bcData);
+        }
+      }
+
       // Apply indicators
       const volumes = chartOHLCV.map((b: any) => Number(b.volume));
       applyIndicators(chart, candleSeries, candleData as CandleData[], volumes, indicators, indicatorSeriesRef);
@@ -1588,6 +1665,22 @@ export default function BacktestDetailPage() {
                     <span className="inline-block w-6 border-t border-dashed border-red-500" />
                     Loss
                   </span>
+                  {bt.timeframe !== "1d" && (
+                    <>
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-6 border-t border-dotted border-gray-400" />
+                        Pivot
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(34,197,94,0.6)" }} />
+                        TC
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(239,68,68,0.6)" }} />
+                        BC
+                      </span>
+                    </>
+                  )}
                   <span className="text-muted-foreground/60">
                     (#1, #2...) link entry-exit pairs
                   </span>
