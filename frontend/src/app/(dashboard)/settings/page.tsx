@@ -622,16 +622,24 @@ export default function SettingsPage() {
                   placeholder="Your Telegram chat ID"
                 />
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleTestNotification("telegram")}
-                disabled={testingChannel === "telegram"}
-              >
-                <Send className="h-3.5 w-3.5 mr-1.5" />
-                {testingChannel === "telegram" ? "Sending..." : "Send Test"}
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={handleSaveNotifications} disabled={notifSaving} size="sm">
+                  {notifSaving ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleTestNotification("telegram")}
+                  disabled={testingChannel === "telegram"}
+                >
+                  <Send className="h-3.5 w-3.5 mr-1.5" />
+                  {testingChannel === "telegram" ? "Sending..." : "Send Test"}
+                </Button>
+              </div>
             </>
+          )}
+          {notifMessage && !tgEnabled && (
+            <p className="text-sm text-muted-foreground">{notifMessage}</p>
           )}
         </CardContent>
       </Card>
@@ -696,15 +704,20 @@ export default function SettingsPage() {
                   <Input id="emailTo" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="you@email.com" />
                 </div>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleTestNotification("email")}
-                disabled={testingChannel === "email"}
-              >
-                <Mail className="h-3.5 w-3.5 mr-1.5" />
-                {testingChannel === "email" ? "Sending..." : "Send Test"}
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={handleSaveNotifications} disabled={notifSaving} size="sm">
+                  {notifSaving ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleTestNotification("email")}
+                  disabled={testingChannel === "email"}
+                >
+                  <Mail className="h-3.5 w-3.5 mr-1.5" />
+                  {testingChannel === "email" ? "Sending..." : "Send Test"}
+                </Button>
+              </div>
             </>
           )}
         </CardContent>
@@ -754,15 +767,20 @@ export default function SettingsPage() {
                   <Input id="smsToNum" value={smsToNum} onChange={(e) => setSmsToNum(e.target.value)} placeholder="+91xxxxxxxxxx" />
                 </div>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleTestNotification("sms")}
-                disabled={testingChannel === "sms"}
-              >
-                <Smartphone className="h-3.5 w-3.5 mr-1.5" />
-                {testingChannel === "sms" ? "Sending..." : "Send Test"}
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={handleSaveNotifications} disabled={notifSaving} size="sm">
+                  {notifSaving ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleTestNotification("sms")}
+                  disabled={testingChannel === "sms"}
+                >
+                  <Smartphone className="h-3.5 w-3.5 mr-1.5" />
+                  {testingChannel === "sms" ? "Sending..." : "Send Test"}
+                </Button>
+              </div>
             </>
           )}
         </CardContent>
