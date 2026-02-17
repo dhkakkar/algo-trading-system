@@ -834,6 +834,8 @@ export default function BacktestDetailPage() {
     import("lightweight-charts").then(({ createChart, ColorType, LineStyle }) => {
       if (!tradeChartRef.current) return;
       tradeChartRef.current.innerHTML = "";
+      // Reset indicator series refs — old chart is destroyed, stale refs cause silent failures
+      indicatorSeriesRef.current = {};
 
       const isDaily = bt.timeframe === "1d";
       const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
