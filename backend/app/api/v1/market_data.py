@@ -1,5 +1,5 @@
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
@@ -57,13 +57,35 @@ async def get_ohlcv(
 
     # Check if recent data is missing and auto-fetch from Kite
     today = date.today()
-    if data:
-        last_date = data[-1].time.date() if hasattr(data[-1].time, 'date') else data[-1].time
-        gap_days = (today - last_date).days
-    else:
-        gap_days = (today - from_date).days
+    is_intraday = interval != "1d"
+    need_fetch = False
+    fetch_from = from_date
 
-    if gap_days >= 1:
+    if data:
+        last_time = data[-1].time
+        last_date = last_time.date() if hasattr(last_time, 'date') else last_time
+        gap_days = (today - last_date).days
+
+        if gap_days >= 1:
+            # Data is from a previous day — fetch from next day onward
+            need_fetch = True
+            fetch_from = last_date + timedelta(days=1)
+        elif is_intraday:
+            # Same day but intraday — re-fetch today if data is stale (>5 min old)
+            now_utc = datetime.now(timezone.utc)
+            if hasattr(last_time, 'tzinfo') and last_time.tzinfo:
+                age_seconds = (now_utc - last_time).total_seconds()
+            else:
+                age_seconds = (now_utc - last_time.replace(tzinfo=timezone.utc)).total_seconds()
+            if age_seconds > 300:  # more than 5 minutes old
+                need_fetch = True
+                fetch_from = today
+    else:
+        # No data at all — fetch the full range
+        need_fetch = True
+        fetch_from = from_date
+
+    if need_fetch:
         kite_interval = kite_interval_map.get(interval)
         if kite_interval:
             try:
@@ -74,7 +96,6 @@ async def get_ohlcv(
                         db, symbol, exchange
                     )
                     if instrument:
-                        fetch_from = (data[-1].time.date() + timedelta(days=1)) if data else from_date
                         await market_data_service.fetch_and_store_from_kite(
                             db, kite_client, instrument.instrument_token,
                             symbol, exchange, fetch_from, today, kite_interval,
