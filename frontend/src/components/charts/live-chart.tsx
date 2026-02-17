@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   ExternalLink,
   WifiOff,
+  Grid3X3,
 } from "lucide-react";
 import type { TradingSnapshot } from "@/types/trading";
 import {
@@ -33,6 +34,7 @@ const TIMEFRAMES = [
 ];
 
 const STORAGE_KEY_TIMEFRAME = "chart_timeframe";
+const STORAGE_KEY_GRID = "chart_grid_visible";
 const CHART_TIMEZONE_KEY = "chart_timezone";
 const DEFAULT_TIMEZONE = "Asia/Kolkata";
 
@@ -97,11 +99,26 @@ export default function LiveChart({
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [showGrid, setShowGrid] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem(STORAGE_KEY_GRID) !== "false";
+    }
+    return true;
+  });
 
   // Persist indicator config
   useEffect(() => {
     localStorage.setItem("chart_indicators", JSON.stringify(indicators));
   }, [indicators]);
+
+  // Persist grid preference and apply to chart
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_GRID, String(showGrid));
+    if (chartRef.current) {
+      const gridColor = showGrid ? "#1f2937" : "transparent";
+      chartRef.current.applyOptions({ grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } } });
+    }
+  }, [showGrid]);
 
   const timezoneOffset = useMemo(() => {
     if (typeof window === "undefined") return 19800;
@@ -263,7 +280,7 @@ export default function LiveChart({
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
           layout: { background: { type: ColorType.Solid, color: "#09090b" }, textColor: "#9ca3af", fontSize: 11 },
-          grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+          grid: { vertLines: { color: showGrid ? "#1f2937" : "transparent" }, horzLines: { color: showGrid ? "#1f2937" : "transparent" } },
           crosshair: { mode: 0 },
           timeScale: { borderColor: "#374151", timeVisible: !isDaily, secondsVisible: false, rightOffset: 5, minBarSpacing: 3 },
           rightPriceScale: { borderColor: "#374151" },
@@ -420,6 +437,18 @@ export default function LiveChart({
             <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
           )}
         </div>
+        <button
+          onClick={() => setShowGrid(!showGrid)}
+          title={showGrid ? "Hide grid lines" : "Show grid lines"}
+          className={cn(
+            "flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors",
+            showGrid
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent"
+          )}
+        >
+          <Grid3X3 className="h-3.5 w-3.5" />
+        </button>
       </div>
 
       {/* Chart area */}

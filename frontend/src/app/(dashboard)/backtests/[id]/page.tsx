@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   Download,
   Settings2,
+  Grid3X3,
 } from "lucide-react";
 import type { BacktestTrade } from "@/types/backtest";
 import {
@@ -504,6 +505,8 @@ export default function BacktestDetailPage() {
   const drawdownChartRef = useRef<HTMLDivElement>(null);
   const tradeChartRef = useRef<HTMLDivElement>(null);
   const tradeChartObjRef = useRef<any>(null);
+  const equityChartObjRef = useRef<any>(null);
+  const drawdownChartObjRef = useRef<any>(null);
   const [activeTab, setActiveTab] = useState<"overview" | "performance" | "trades" | "chart">("overview");
   const [chartSymbol, setChartSymbol] = useState<string>("");
   const [chartOHLCV, setChartOHLCV] = useState<any[]>([]);
@@ -519,6 +522,22 @@ export default function BacktestDetailPage() {
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [showGrid, setShowGrid] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("chart_grid_visible") !== "false";
+    }
+    return true;
+  });
+
+  // Persist grid preference and apply to all charts
+  useEffect(() => {
+    localStorage.setItem("chart_grid_visible", String(showGrid));
+    const gridColor = showGrid ? "rgba(42,46,57,0.6)" : "transparent";
+    const opts = { grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } } };
+    equityChartObjRef.current?.applyOptions(opts);
+    drawdownChartObjRef.current?.applyOptions(opts);
+    tradeChartObjRef.current?.applyOptions(opts);
+  }, [showGrid]);
 
   // Compute detailed stats from trades
   const stats = useMemo(
@@ -594,6 +613,7 @@ export default function BacktestDetailPage() {
       if (!equityChartRef.current) return;
       equityChartRef.current.innerHTML = "";
 
+      const gridColor = showGrid ? "rgba(42,46,57,0.6)" : "transparent";
       const chart = createChart(equityChartRef.current, {
         width: equityChartRef.current.clientWidth,
         height: 350,
@@ -603,8 +623,8 @@ export default function BacktestDetailPage() {
           fontFamily: "'Inter', sans-serif",
         },
         grid: {
-          vertLines: { color: "rgba(42,46,57,0.6)" },
-          horzLines: { color: "rgba(42,46,57,0.6)" },
+          vertLines: { color: gridColor },
+          horzLines: { color: gridColor },
         },
         rightPriceScale: {
           borderColor: "#2a2e39",
@@ -653,6 +673,7 @@ export default function BacktestDetailPage() {
       }
 
       chart.timeScale().fitContent();
+      equityChartObjRef.current = chart;
 
       const handleResize = () => {
         if (equityChartRef.current) {
@@ -663,6 +684,7 @@ export default function BacktestDetailPage() {
 
       cleanup = () => {
         window.removeEventListener("resize", handleResize);
+        equityChartObjRef.current = null;
         chart.remove();
       };
     });
@@ -680,6 +702,7 @@ export default function BacktestDetailPage() {
       if (!drawdownChartRef.current) return;
       drawdownChartRef.current.innerHTML = "";
 
+      const gridColor = showGrid ? "rgba(42,46,57,0.6)" : "transparent";
       const chart = createChart(drawdownChartRef.current, {
         width: drawdownChartRef.current.clientWidth,
         height: 220,
@@ -689,8 +712,8 @@ export default function BacktestDetailPage() {
           fontFamily: "'Inter', sans-serif",
         },
         grid: {
-          vertLines: { color: "rgba(42,46,57,0.6)" },
-          horzLines: { color: "rgba(42,46,57,0.6)" },
+          vertLines: { color: gridColor },
+          horzLines: { color: gridColor },
         },
         rightPriceScale: {
           borderColor: "#2a2e39",
@@ -722,6 +745,7 @@ export default function BacktestDetailPage() {
       );
       series.setData(data);
       chart.timeScale().fitContent();
+      drawdownChartObjRef.current = chart;
 
       const handleResize = () => {
         if (drawdownChartRef.current) {
@@ -732,6 +756,7 @@ export default function BacktestDetailPage() {
 
       cleanup = () => {
         window.removeEventListener("resize", handleResize);
+        drawdownChartObjRef.current = null;
         chart.remove();
       };
     });
@@ -792,6 +817,7 @@ export default function BacktestDetailPage() {
         return Math.floor(new Date(timeStr).getTime() / 1000) + 19800;
       };
 
+      const gridColor = showGrid ? "rgba(42,46,57,0.6)" : "transparent";
       const chart = createChart(tradeChartRef.current, {
         width: tradeChartRef.current.clientWidth,
         height: 500,
@@ -801,8 +827,8 @@ export default function BacktestDetailPage() {
           fontFamily: "'Inter', sans-serif",
         },
         grid: {
-          vertLines: { color: "rgba(42,46,57,0.6)" },
-          horzLines: { color: "rgba(42,46,57,0.6)" },
+          vertLines: { color: gridColor },
+          horzLines: { color: gridColor },
         },
         crosshair: { mode: 0 },
         timeScale: {
@@ -1207,8 +1233,20 @@ export default function BacktestDetailPage() {
 
               {/* Equity Curve */}
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-base">Equity Curve</CardTitle>
+                  <button
+                    onClick={() => setShowGrid(!showGrid)}
+                    className={cn(
+                      "p-1 rounded-md border transition-colors",
+                      showGrid
+                        ? "bg-primary/10 text-primary border-primary/30"
+                        : "bg-background text-muted-foreground border-border hover:text-foreground"
+                    )}
+                    title={showGrid ? "Hide grid lines" : "Show grid lines"}
+                  >
+                    <Grid3X3 className="h-3.5 w-3.5" />
+                  </button>
                 </CardHeader>
                 <CardContent>
                   {bt.equity_curve?.length ? (
@@ -1223,8 +1261,20 @@ export default function BacktestDetailPage() {
 
               {/* Drawdown Chart */}
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-base">Drawdown</CardTitle>
+                  <button
+                    onClick={() => setShowGrid(!showGrid)}
+                    className={cn(
+                      "p-1 rounded-md border transition-colors",
+                      showGrid
+                        ? "bg-primary/10 text-primary border-primary/30"
+                        : "bg-background text-muted-foreground border-border hover:text-foreground"
+                    )}
+                    title={showGrid ? "Hide grid lines" : "Show grid lines"}
+                  >
+                    <Grid3X3 className="h-3.5 w-3.5" />
+                  </button>
                 </CardHeader>
                 <CardContent>
                   {bt.drawdown_curve?.length ? (
@@ -1685,22 +1735,36 @@ export default function BacktestDetailPage() {
                     (#1, #2...) link entry-exit pairs
                   </span>
                 </div>
-                <div className="relative">
+                <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+                    onClick={() => setShowGrid(!showGrid)}
                     className={cn(
                       "p-1.5 rounded-md border transition-colors",
-                      showIndicatorPanel
-                        ? "bg-primary text-primary-foreground border-primary"
+                      showGrid
+                        ? "bg-primary/10 text-primary border-primary/30"
                         : "bg-background text-muted-foreground border-border hover:text-foreground"
                     )}
-                    title="Indicators"
+                    title={showGrid ? "Hide grid lines" : "Show grid lines"}
                   >
-                    <Settings2 className="h-4 w-4" />
+                    <Grid3X3 className="h-4 w-4" />
                   </button>
-                  {showIndicatorPanel && (
-                    <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
-                  )}
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+                      className={cn(
+                        "p-1.5 rounded-md border transition-colors",
+                        showIndicatorPanel
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-border hover:text-foreground"
+                      )}
+                      title="Indicators"
+                    >
+                      <Settings2 className="h-4 w-4" />
+                    </button>
+                    {showIndicatorPanel && (
+                      <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
+                    )}
+                  </div>
                 </div>
               </div>
 

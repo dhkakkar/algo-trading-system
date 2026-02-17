@@ -11,6 +11,7 @@ import {
   RotateCcw,
   X,
   Settings2,
+  Grid3X3,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -147,12 +148,27 @@ export default function ChartPage() {
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [showGrid, setShowGrid] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("chart_grid_visible") !== "false";
+    }
+    return true;
+  });
   const indicatorsRef = useRef<IndicatorConfig>(indicators);
 
   // Persist indicator config
   useEffect(() => {
     localStorage.setItem("chart_indicators", JSON.stringify(indicators));
   }, [indicators]);
+
+  // Persist grid preference and apply to chart
+  useEffect(() => {
+    localStorage.setItem("chart_grid_visible", String(showGrid));
+    if (chartRef.current) {
+      const gridColor = showGrid ? "#1f2937" : "transparent";
+      chartRef.current.applyOptions({ grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } } });
+    }
+  }, [showGrid]);
   const activeCount = Object.values(indicators).filter((v) => v.enabled).length;
 
   // Infinite scroll refs
@@ -583,8 +599,8 @@ export default function ChartPage() {
           textColor: "#9ca3af",
         },
         grid: {
-          vertLines: { color: "#1f2937" },
-          horzLines: { color: "#1f2937" },
+          vertLines: { color: showGrid ? "#1f2937" : "transparent" },
+          horzLines: { color: showGrid ? "#1f2937" : "transparent" },
         },
         crosshair: {
           mode: 0, // Normal mode
@@ -766,6 +782,19 @@ export default function ChartPage() {
               <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
             )}
           </div>
+
+          <button
+            onClick={() => setShowGrid(!showGrid)}
+            title={showGrid ? "Hide grid lines" : "Show grid lines"}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+              showGrid
+                ? "bg-primary/10 text-primary"
+                : "bg-muted text-muted-foreground hover:bg-muted/80"
+            )}
+          >
+            <Grid3X3 className="h-3.5 w-3.5" />
+          </button>
 
           <div className="flex items-center gap-2">
             <Label htmlFor="from" className="text-sm whitespace-nowrap">From</Label>
