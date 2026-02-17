@@ -10,6 +10,7 @@ from app.models.instrument import Instrument
 from app.models.broker_connection import BrokerConnection
 from app.models.platform_settings import PlatformSettings
 from app.models.notification_settings import NotificationSettings
+from app.models.session_log import SessionLog
 
 __all__ = [
     "User",
@@ -25,4 +26,5 @@ __all__ = [
     "BrokerConnection",
     "PlatformSettings",
     "NotificationSettings",
+    "SessionLog",
 ]

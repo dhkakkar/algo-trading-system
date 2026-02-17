@@ -17,6 +17,7 @@ from app.sdk.context import TradingContext
 from app.sdk.types import FilledOrder, PositionInfo
 from app.services.notification_service import fire_notification
 from app.schemas.notifications import NotificationEventType
+from app.services.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ class LiveTradingContext(TradingContext):
             "volume": 0, "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+    def log(self, message: str) -> None:
+        """Override to route strategy logs through the SessionLogger."""
+        self._logger.info(message)
+        if self._runner.slog:
+            self._runner.slog.info(message, source="strategy")
+
     def buy(self, symbol: str, quantity: int, order_type: str = "MARKET",
             price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
         # Risk check
@@ -59,7 +66,7 @@ class LiveTradingContext(TradingContext):
         )
         if not allowed:
             self._runner._logs.append(f"[RISK] BUY {symbol} x{quantity} REJECTED: {reason}")
-            logger.warning("Risk rejection: BUY %s x%d: %s", symbol, quantity, reason)
+            self._runner.slog.warning(f"RISK REJECTED: BUY {symbol} x{quantity} — {reason}", source="runner")
             return f"REJECTED-{reason[:20]}"
 
         # Place real order
@@ -74,9 +81,10 @@ class LiveTradingContext(TradingContext):
                 "symbol": symbol, "exchange": exchange, "side": "BUY",
                 "quantity": quantity, "order_type": order_type, "price": price,
             }
-            logger.info("Live BUY placed: %s x%d -> %s", symbol, quantity, order_id)
+            self._runner.slog.info(f"BUY order placed: {symbol} x{quantity} @ {price or 'MARKET'} -> {order_id}", source="runner")
         else:
             self._runner._logs.append(f"[ERROR] BUY {symbol} failed: {result.get('error')}")
+            self._runner.slog.error(f"BUY {symbol} x{quantity} FAILED: {result.get('error')}", source="runner")
 
         return order_id
 
@@ -89,7 +97,7 @@ class LiveTradingContext(TradingContext):
         )
         if not allowed:
             self._runner._logs.append(f"[RISK] SELL {symbol} x{quantity} REJECTED: {reason}")
-            logger.warning("Risk rejection: SELL %s x%d: %s", symbol, quantity, reason)
+            self._runner.slog.warning(f"RISK REJECTED: SELL {symbol} x{quantity} — {reason}", source="runner")
             return f"REJECTED-{reason[:20]}"
 
         result = self._runner.executor.place_order(
@@ -103,9 +111,10 @@ class LiveTradingContext(TradingContext):
                 "symbol": symbol, "exchange": exchange, "side": "SELL",
                 "quantity": quantity, "order_type": order_type, "price": price,
             }
-            logger.info("Live SELL placed: %s x%d -> %s", symbol, quantity, order_id)
+            self._runner.slog.info(f"SELL order placed: {symbol} x{quantity} @ {price or 'MARKET'} -> {order_id}", source="runner")
         else:
             self._runner._logs.append(f"[ERROR] SELL {symbol} failed: {result.get('error')}")
+            self._runner.slog.error(f"SELL {symbol} x{quantity} FAILED: {result.get('error')}", source="runner")
 
         return order_id
 
@@ -160,7 +169,7 @@ class LiveTradingRunner(BaseRunner):
     """
 
     def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any],
-                 kite_client: Any, user_id=None):
+                 kite_client: Any, user_id=None, db_session_factory=None):
         self.session_id = session_id
         self._strategy_code = strategy_code
         self._config = config
@@ -182,6 +191,7 @@ class LiveTradingRunner(BaseRunner):
         self._paused = False
         self._tick_callback: Optional[Any] = None
         self._logs: list[str] = []
+        self.slog = SessionLogger(session_id, db_session_factory)
 
     async def initialize(self, strategy_code: str, params: dict, instruments: list) -> None:
         self._strategy_code = strategy_code
@@ -205,6 +215,7 @@ class LiveTradingRunner(BaseRunner):
             except Exception as exc:
                 self._logs.append(f"[ERROR] on_data: {type(exc).__name__}: {exc}")
                 logger.warning("Live strategy on_data error: %s", exc)
+                self.slog.error(f"on_data error: {type(exc).__name__}: {exc}", source="runner")
                 if self._user_id:
                     fire_notification(self._user_id, NotificationEventType.SESSION_CRASHED, {
                         "session_id": self.session_id,
@@ -241,6 +252,7 @@ class LiveTradingRunner(BaseRunner):
 
     async def shutdown(self) -> None:
         self._running = False
+        self.slog.info("Session stopped", source="system")
         if self._strategy_instance and self._context:
             try:
                 self._strategy_instance.on_stop(self._context)
@@ -265,13 +277,20 @@ class LiveTradingRunner(BaseRunner):
         self._strategy_instance.on_init(self._context)
         self._running = True
         self.risk_manager.reset_daily()
+        self.slog.info(
+            f"Session started (mode=live, instruments={list(self._tracked_symbols)}, "
+            f"capital={self._config.get('initial_capital', 100000)})",
+            source="system",
+        )
         logger.info("Live trading session %s started", self.session_id)
 
     def pause(self):
         self._paused = True
+        self.slog.info("Session paused", source="system")
 
     def resume(self):
         self._paused = False
+        self.slog.info("Session resumed", source="system")
 
     async def square_off_all(self) -> list[dict]:
         """Emergency: close all positions via market orders."""
@@ -338,6 +357,10 @@ class LiveTradingRunner(BaseRunner):
                             "quantity": fill.quantity, "price": fill.fill_price, "mode": "live",
                         })
 
+                self.slog.info(
+                    f"FILLED: {info['side']} {info['symbol']} x{fill.quantity} @ {fill.fill_price:.2f}",
+                    source="runner",
+                )
                 if self._strategy_instance and self._context:
                     try:
                         filled = FilledOrder(
@@ -349,10 +372,13 @@ class LiveTradingRunner(BaseRunner):
                         self._strategy_instance.on_order_fill(self._context, filled)
                     except Exception as exc:
                         self._logs.append(f"[ERROR] on_order_fill: {exc}")
+                        self.slog.error(f"on_order_fill error: {exc}", source="runner")
 
             elif kite_status in ("REJECTED", "CANCELLED"):
                 completed_ids.append(order_id)
-                self._logs.append(f"[ORDER] {info['side']} {info['symbol']} {kite_status}: {status.get('status_message', '')}")
+                reject_msg = f"{info['side']} {info['symbol']} {kite_status}: {status.get('status_message', '')}"
+                self._logs.append(f"[ORDER] {reject_msg}")
+                self.slog.warning(f"ORDER {reject_msg}", source="runner")
                 if self._user_id:
                     fire_notification(self._user_id, NotificationEventType.ORDER_REJECTED, {
                         "symbol": info["symbol"], "side": info["side"],

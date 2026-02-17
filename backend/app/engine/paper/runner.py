@@ -15,6 +15,7 @@ from app.sdk.context import TradingContext
 from app.sdk.types import FilledOrder, PositionInfo
 from app.services.notification_service import fire_notification
 from app.schemas.notifications import NotificationEventType
+from app.services.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,12 @@ class PaperTradingContext(TradingContext):
             "timestamp": now,
         }
 
+    def log(self, message: str) -> None:
+        """Override to route strategy logs through the SessionLogger."""
+        self._logger.info(message)
+        if self._runner.slog:
+            self._runner.slog.info(message, source="strategy")
+
     def buy(self, symbol: str, quantity: int, order_type: str = "MARKET", price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
         order_id = f"PT-{uuid.uuid4().hex[:8]}"
         order = OrderEvent(
@@ -116,7 +123,8 @@ class PaperTradingContext(TradingContext):
             status="pending",
         )
         self._runner._order_queue.append(order)
-        logger.info("Paper BUY queued: %s x%d @ %s", symbol, quantity, price or "MARKET")
+        if self._runner.slog:
+            self._runner.slog.info(f"BUY order queued: {symbol} x{quantity} @ {price or 'MARKET'}", source="runner")
         return order_id
 
     def sell(self, symbol: str, quantity: int, order_type: str = "MARKET", price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
@@ -135,7 +143,8 @@ class PaperTradingContext(TradingContext):
             status="pending",
         )
         self._runner._order_queue.append(order)
-        logger.info("Paper SELL queued: %s x%d @ %s", symbol, quantity, price or "MARKET")
+        if self._runner.slog:
+            self._runner.slog.info(f"SELL order queued: {symbol} x{quantity} @ {price or 'MARKET'}", source="runner")
         return order_id
 
     def cancel_order(self, order_id: str) -> bool:
@@ -222,6 +231,7 @@ class PaperTradingRunner(BaseRunner):
         self._ticker: Optional[Any] = None
         self._user_id = user_id
         self._db_session_factory = db_session_factory
+        self.slog = SessionLogger(session_id, db_session_factory)
 
         # Bar aggregation
         self._timeframe: str = config.get("timeframe", "5m")
@@ -284,6 +294,7 @@ class PaperTradingRunner(BaseRunner):
             except Exception as exc:
                 self._logs.append(f"[ERROR] on_data: {type(exc).__name__}: {exc}")
                 logger.warning("Paper strategy on_data error: %s", exc)
+                self.slog.error(f"on_data error: {type(exc).__name__}: {exc}", source="runner")
                 if self._user_id:
                     fire_notification(self._user_id, NotificationEventType.SESSION_CRASHED, {
                         "session_id": self.session_id,
@@ -320,8 +331,9 @@ class PaperTradingRunner(BaseRunner):
             self._historical_cache[symbol] = pd.concat([df, new_row])
         else:
             self._historical_cache[symbol] = new_row
-        logger.info("Bar finalized for %s: O=%.2f H=%.2f L=%.2f C=%.2f",
-                     symbol, bar["open"], bar["high"], bar["low"], bar["close"])
+        msg = f"Bar {symbol}: O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} C={bar['close']:.2f}"
+        logger.info(msg)
+        self.slog.info(msg, source="runner")
 
     async def place_order(self, symbol: str, exchange: str, side: str, quantity: int,
                           order_type: str = "MARKET", price: float | None = None,
@@ -342,6 +354,7 @@ class PaperTradingRunner(BaseRunner):
 
     async def shutdown(self) -> None:
         self._running = False
+        self.slog.info("Session stopped", source="system")
         if self._ticker:
             try:
                 self._ticker.stop()
@@ -379,15 +392,23 @@ class PaperTradingRunner(BaseRunner):
         # Call on_init
         self._strategy_instance.on_init(self._context)
         self._running = True
+        self.slog.info(
+            f"Session started (mode=paper, timeframe={self._timeframe}, "
+            f"instruments={list(self._tracked_symbols)}, "
+            f"capital={self._config.get('initial_capital', 100000)})",
+            source="system",
+        )
         logger.info("Paper trading session %s started (timeframe=%s, tf_seconds=%d)",
                      self.session_id, self._timeframe, self._tf_seconds)
 
     def pause(self):
         self._paused = True
+        self.slog.info("Session paused", source="system")
         logger.info("Paper trading session %s paused", self.session_id)
 
     def resume(self):
         self._paused = False
+        self.slog.info("Session resumed", source="system")
         logger.info("Paper trading session %s resumed", self.session_id)
 
     def get_cached_history(self, symbol: str, periods: int):
@@ -455,7 +476,10 @@ class PaperTradingRunner(BaseRunner):
                         self._strategy_instance.on_order_fill(self._context, filled_order)
                     except Exception as exc:
                         self._logs.append(f"[ERROR] on_order_fill: {exc}")
-                logger.info("Paper filled: %s %s x%d @ %.2f", fill.side, fill.symbol, fill.quantity, fill.fill_price)
+                        self.slog.error(f"on_order_fill error: {exc}", source="runner")
+                fill_msg = f"FILLED: {fill.side} {fill.symbol} x{fill.quantity} @ {fill.fill_price:.2f}"
+                logger.info("Paper %s", fill_msg)
+                self.slog.info(fill_msg, source="runner")
             else:
                 still_pending.append(order)
         self._order_queue = still_pending

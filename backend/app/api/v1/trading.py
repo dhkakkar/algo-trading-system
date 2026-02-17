@@ -213,7 +213,10 @@ async def start_session(
             "timeframe": session.timeframe,
         }
 
-        runner = LiveTradingRunner(str(session.id), strategy.code, config, kite_client, user_id=current_user.id)
+        runner = LiveTradingRunner(
+            str(session.id), strategy.code, config, kite_client,
+            user_id=current_user.id, db_session_factory=async_session_factory,
+        )
 
         async def on_tick_update(r):
             snapshot = r.get_state_snapshot()
@@ -427,3 +430,42 @@ async def get_session_snapshot(
             await db.commit()
         raise BadRequestException("Session is not active")
     return runner.get_state_snapshot()
+
+
+@router.get("/sessions/{session_id}/logs")
+async def get_session_logs(
+    session_id: uuid.UUID,
+    level: str | None = None,
+    limit: int = 200,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get logs for a trading session (from DB, includes historical logs)."""
+    from app.models.session_log import SessionLog
+    from sqlalchemy import desc
+
+    # Verify user owns the session
+    await trading_service.get_session(db, session_id, current_user.id)
+
+    stmt = (
+        select(SessionLog)
+        .where(SessionLog.trading_session_id == session_id)
+    )
+    if level:
+        stmt = stmt.where(SessionLog.level == level.upper())
+    stmt = stmt.order_by(desc(SessionLog.created_at)).limit(limit)
+
+    result = await db.execute(stmt)
+    logs = list(result.scalars().all())
+    logs.reverse()  # Return in chronological order
+
+    return [
+        {
+            "id": str(log.id),
+            "timestamp": log.created_at.isoformat(),
+            "level": log.level,
+            "source": log.source,
+            "message": log.message,
+        }
+        for log in logs
+    ]

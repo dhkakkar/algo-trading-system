@@ -102,12 +102,14 @@ export default function LiveTradingDetailPage() {
 
   const addToast = useToastStore((s) => s.addToast);
 
-  const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades">(
+  const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades" | "logs">(
     "positions"
   );
   const [orders, setOrders] = useState<TradingOrder[]>([]);
   const [trades, setTrades] = useState<TradingTrade[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [squareOffLoading, setSquareOffLoading] = useState(false);
   const [showSquareOffConfirm, setShowSquareOffConfirm] = useState(false);
@@ -211,13 +213,27 @@ export default function LiveTradingDetailPage() {
     }
   }, [sessionId]);
 
+  const fetchLogs = useCallback(async () => {
+    setLogsLoading(true);
+    try {
+      const res = await apiClient.get(`/trading/sessions/${sessionId}/logs?limit=500`);
+      setLogs(res.data);
+    } catch {
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     if (activeTab === "orders") {
       fetchOrders();
     } else if (activeTab === "trades") {
       fetchTrades();
+    } else if (activeTab === "logs") {
+      fetchLogs();
     }
-  }, [activeTab, fetchOrders, fetchTrades]);
+  }, [activeTab, fetchOrders, fetchTrades, fetchLogs]);
 
   const handleStart = async () => {
     await startSession(sessionId);
@@ -599,7 +615,7 @@ export default function LiveTradingDetailPage() {
           {/* Tab Navigation */}
           <div className="border-b flex-shrink-0">
             <nav className="flex">
-              {(["positions", "orders", "trades"] as const).map((tab) => (
+              {(["positions", "orders", "trades", "logs"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -702,6 +718,42 @@ export default function LiveTradingDetailPage() {
                     <span>{formatCurrency(t.entry_price)} &rarr; {t.exit_price != null ? formatCurrency(t.exit_price) : "Open"}</span>
                     <span>{t.pnl_percent != null ? formatPercent(t.pnl_percent) : "--"}</span>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Logs Tab */}
+      {activeTab === "logs" && (
+        <div className="p-2">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-muted-foreground">{logs.length} log entries</span>
+            <button onClick={fetchLogs} className="text-xs text-primary hover:underline">Refresh</button>
+          </div>
+          {logsLoading ? (
+            <div className="h-32 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+          ) : logs.length === 0 ? (
+            <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">No logs yet</div>
+          ) : (
+            <div className="space-y-0.5 font-mono text-[11px]">
+              {logs.map((log: any) => (
+                <div key={log.id} className={cn(
+                  "px-2 py-1 rounded flex gap-2",
+                  log.level === "ERROR" ? "bg-red-500/10 text-red-400" :
+                  log.level === "WARNING" ? "bg-yellow-500/10 text-yellow-400" :
+                  "text-muted-foreground"
+                )}>
+                  <span className="text-[10px] opacity-60 shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                  <span className={cn(
+                    "text-[10px] px-1 rounded shrink-0",
+                    log.level === "ERROR" ? "bg-red-500/20 text-red-400" :
+                    log.level === "WARNING" ? "bg-yellow-500/20 text-yellow-400" :
+                    "bg-blue-500/10 text-blue-400"
+                  )}>{log.level}</span>
+                  <span className="text-[10px] px-1 rounded bg-accent/50 shrink-0">{log.source}</span>
+                  <span className="break-all">{log.message}</span>
                 </div>
               ))}
             </div>
