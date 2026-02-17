@@ -508,7 +508,7 @@ class NiftyEMACPRStrategy(Strategy):
         return False
 
     def on_order_fill(self, ctx, order):
-        """Record entry premium when the sell order fills."""
+        """Handle order fills: record entry premium on SELL, reset on BUY."""
         ctx.log(
             "FILLED: " + order.side + " " + order.symbol
             + " x" + str(order.quantity) + " @ " + str(order.fill_price)
@@ -518,6 +518,10 @@ class NiftyEMACPRStrategy(Strategy):
             self.entry_premium = order.fill_price
             ctx.log("Entry premium recorded: " + str(round(order.fill_price, 2))
                     + " | lot_size=" + str(self.held_lot_size))
+        # When a buy (exit/cover) fills, ensure position state is reset
+        # This handles both strategy-initiated exits and runner EOD closes
+        elif order.side == "BUY" and (self.in_long or self.in_short):
+            self.reset_position()
 
     def on_stop(self, ctx):
         ctx.log("EMA+CPR Options Selling Strategy stopped")

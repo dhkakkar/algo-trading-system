@@ -578,6 +578,8 @@ class NiftyEMACPRStrategy(Strategy):
             self.entry_premium = order.fill_price
             ctx.log("Entry premium: " + str(round(order.fill_price, 2))
                     + " | lot_size=" + str(self.held_lot_size))
+        elif order.side == "BUY" and (self.in_long or self.in_short):
+            self.reset_position()
 
     def on_stop(self, ctx):
         ctx.log("Strategy stopped")

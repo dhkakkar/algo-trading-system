@@ -683,32 +683,6 @@ class BacktestRunner(BaseRunner):
             #     (orders placed during previous on_data get filled now)
             self._process_pending_orders(bar_index)
 
-            # 5a-ii. Intraday EOD square-off
-            if eod_time and hasattr(timestamp, "hour"):
-                ts_ist = _to_ist(timestamp)
-                bar_time = (ts_ist.hour, ts_ist.minute)
-                bar_date = ts_ist.date()
-                if bar_time >= eod_time and bar_date != _last_eod_date:
-                    if self.portfolio.positions:
-                        prices = self._get_all_current_prices()
-                        closed = self.portfolio.close_all_positions(prices, timestamp)
-                        _last_eod_date = bar_date
-                        for pos in closed:
-                            sym = pos.get("symbol", "?")
-                            pnl = pos.get("pnl", 0)
-                            self._add_log(
-                                "INFO",
-                                f"EOD square-off: closed {sym} at {eod_time_str or '15:10'} — P&L: {pnl:.2f}",
-                                "runner",
-                            )
-                    else:
-                        if bar_date != _last_eod_date:
-                            _last_eod_date = bar_date
-                    # Cancel any pending orders
-                    if self._pending_orders:
-                        self._add_log("INFO", f"EOD: cancelled {len(self._pending_orders)} pending order(s)", "runner")
-                        self._pending_orders.clear()
-
             # 5b. Call strategy.on_data()
             try:
                 strategy_instance.on_data(self._context)
@@ -726,11 +700,53 @@ class BacktestRunner(BaseRunner):
             # 5c. Move newly placed orders to pending queue for next-bar execution
             self._stage_new_orders()
 
-            # 5d. Record equity curve point (include options prices for correct MTM)
+            # 5d. Intraday EOD square-off (AFTER strategy has had its chance
+            #     to exit, so we don't conflict with strategy-managed exits)
+            if eod_time and hasattr(timestamp, "hour"):
+                ts_ist = _to_ist(timestamp)
+                bar_time = (ts_ist.hour, ts_ist.minute)
+                bar_date = ts_ist.date()
+                if bar_time >= eod_time and bar_date != _last_eod_date:
+                    if self.portfolio.positions:
+                        prices = self._get_all_current_prices()
+                        closed = self.portfolio.close_all_positions(prices, timestamp)
+                        _last_eod_date = bar_date
+                        for pos in closed:
+                            sym = pos.get("symbol", "?")
+                            pnl = pos.get("pnl", 0)
+                            self._add_log(
+                                "INFO",
+                                f"EOD square-off: closed {sym} at {eod_time_str or '15:10'} — P&L: {pnl:.2f}",
+                                "runner",
+                            )
+                            # Notify strategy of forced close
+                            try:
+                                close_side = "BUY" if pos.get("side") == "SHORT" else "SELL"
+                                filled = FilledOrder(
+                                    order_id=f"EOD-{sym}",
+                                    symbol=sym,
+                                    exchange=pos.get("exchange", "NFO"),
+                                    side=close_side,
+                                    quantity=int(pos.get("quantity", 0)),
+                                    fill_price=float(pos.get("exit_price", 0)),
+                                    timestamp=timestamp,
+                                )
+                                self._strategy_instance.on_order_fill(self._context, filled)
+                            except Exception as exc:
+                                self._add_log("ERROR", f"EOD on_order_fill raised: {exc}", "strategy")
+                    else:
+                        if bar_date != _last_eod_date:
+                            _last_eod_date = bar_date
+                    # Cancel ALL pending orders (strategy exits are now redundant)
+                    if self._pending_orders:
+                        self._add_log("INFO", f"EOD: cancelled {len(self._pending_orders)} pending order(s)", "runner")
+                        self._pending_orders.clear()
+
+            # 5e. Record equity curve point (include options prices for correct MTM)
             current_prices = self._get_all_current_prices()
             self.portfolio.record_equity(timestamp, current_prices)
 
-            # 5e. Progress callback
+            # 5f. Progress callback
             if progress_callback and (bar_index % progress_interval == 0 or bar_index == total_bars - 1):
                 result = progress_callback(bar_index + 1, total_bars)
                 # Support async callbacks
