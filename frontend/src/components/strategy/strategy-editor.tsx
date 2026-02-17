@@ -325,7 +325,7 @@ class NiftyEMACPRStrategy(Strategy):
     def _exit_held_option(self, ctx, reason):
         if self.held_option:
             qty = self.num_lots * self.held_lot_size
-            ctx.buy(self.held_option, qty, exchange="NFO", product="NRML")
+            ctx.buy(self.held_option, qty, exchange="NFO", product="MIS")
             ctx.log("EXIT (" + reason + ") | buyback " + self.held_option + " x" + str(qty))
 
     def on_data(self, ctx):
@@ -426,7 +426,7 @@ class NiftyEMACPRStrategy(Strategy):
             if opt:
                 qty = self.num_lots * opt.get("lot_size", 25)
                 self.held_lot_size = opt.get("lot_size", 25)
-                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="NRML")
+                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
                 self.held_option = opt["tradingsymbol"]
                 self.entry_price = cur_close
                 self.current_sl = cur_close - self.initial_sl
@@ -447,7 +447,7 @@ class NiftyEMACPRStrategy(Strategy):
             if opt:
                 qty = self.num_lots * opt.get("lot_size", 25)
                 self.held_lot_size = opt.get("lot_size", 25)
-                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="NRML")
+                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
                 self.held_option = opt["tradingsymbol"]
                 self.entry_price = cur_close
                 self.current_sl = cur_close + self.initial_sl
