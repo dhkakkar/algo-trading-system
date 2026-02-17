@@ -539,11 +539,38 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         progress_interval = max(1, total_bars // 100)  # report ~100 times
 
+        # Intraday EOD square-off: close all positions at 15:10 IST
+        timeframe = self._config.get("timeframe", "1d")
+        is_intraday_tf = timeframe not in ("1d", "1D", "day", "1w", "1W", "week")
+        _last_eod_date = None  # track which day we already squared off
+
         for bar_index, (timestamp, bar_data) in enumerate(self.data_handler):
 
             # 5a. Process pending orders from the *previous* bar
             #     (orders placed during previous on_data get filled now)
             self._process_pending_orders(bar_index)
+
+            # 5a-ii. Intraday EOD square-off at 15:10
+            if is_intraday_tf and hasattr(timestamp, "hour"):
+                bar_time = (timestamp.hour, timestamp.minute)
+                bar_date = timestamp.date() if hasattr(timestamp, "date") else None
+                if bar_time >= (15, 10) and bar_date != _last_eod_date:
+                    if self.portfolio.positions:
+                        prices = self.data_handler.get_current_prices()
+                        closed = self.portfolio.close_all_positions(prices, timestamp)
+                        _last_eod_date = bar_date
+                        for pos in closed:
+                            sym = pos.get("symbol", "?")
+                            pnl = pos.get("pnl", 0)
+                            self._add_log(
+                                "INFO",
+                                f"EOD square-off: closed {sym} at 15:10 — P&L: {pnl:.2f}",
+                                "runner",
+                            )
+                        # Cancel any pending orders
+                        if self._pending_orders:
+                            self._add_log("INFO", f"EOD: cancelled {len(self._pending_orders)} pending order(s)", "runner")
+                            self._pending_orders.clear()
 
             # 5b. Call strategy.on_data()
             try:
