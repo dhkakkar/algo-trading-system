@@ -1915,6 +1915,7 @@ export default function BacktestDetailPage() {
                         <span className="shrink-0 text-muted-foreground text-[11px] whitespace-nowrap">
                           {log.timestamp
                             ? new Date(log.timestamp).toLocaleString("en-IN", {
+                                year: "numeric",
                                 month: "short",
                                 day: "2-digit",
                                 hour: "2-digit",

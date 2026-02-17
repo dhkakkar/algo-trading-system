@@ -520,7 +520,7 @@ class BacktestRunner(BaseRunner):
                        f"timeframe: {self._config.get('timeframe', '1d')}", "runner")
 
         # Capture log messages from the strategy (print() and ctx.log())
-        log_handler = _ListLogHandler(self._logs)
+        log_handler = _ListLogHandler(self._logs, data_handler=self.data_handler)
         self._context._logger.addHandler(log_handler)
         self._context._logger.setLevel(logging.DEBUG)
 
@@ -912,19 +912,23 @@ def _safe_import(name: str, *args, **kwargs):
 class _ListLogHandler(logging.Handler):
     """A logging handler that appends structured log entries to a list."""
 
-    def __init__(self, log_list: list[dict]) -> None:
+    def __init__(self, log_list: list[dict], data_handler=None) -> None:
         super().__init__()
         self._logs = log_list
+        self._data_handler = data_handler
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
             level_map = {logging.DEBUG: "INFO", logging.INFO: "INFO", logging.WARNING: "WARNING", logging.ERROR: "ERROR"}
+            ts = (self._data_handler.current_timestamp
+                  if self._data_handler and self._data_handler.current_timestamp
+                  else datetime.now())
             self._logs.append({
                 "level": level_map.get(record.levelno, "INFO"),
                 "source": "strategy",
                 "message": msg,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": ts.isoformat() if isinstance(ts, datetime) else str(ts),
             })
         except Exception:
             pass
