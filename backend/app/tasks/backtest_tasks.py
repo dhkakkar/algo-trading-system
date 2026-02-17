@@ -8,6 +8,9 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Module-level ref so progress callback can update Celery task state
+_current_celery_task = None
+
 
 def get_async_session():
     """Create a standalone async session for Celery workers."""
@@ -54,17 +57,13 @@ async def _run_backtest(backtest_id: str):
                 return
 
             # Load OHLCV data for all instruments
-            from datetime import datetime as dt
-
             start_dt = datetime.combine(backtest.start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
             end_dt = datetime.combine(backtest.end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
 
-            # Map interval names
             interval = backtest.timeframe
 
             ohlcv_records = []
             for symbol_str in backtest.instruments:
-                # symbol_str could be "RELIANCE" or "NSE:RELIANCE"
                 parts = symbol_str.split(":") if ":" in symbol_str else ["NSE", symbol_str]
                 exchange = parts[0] if len(parts) > 1 else "NSE"
                 symbol = parts[-1]
@@ -92,7 +91,6 @@ async def _run_backtest(backtest_id: str):
                 return
 
             # Run backtest
-            # Extract engine-level settings from parameters (if provided)
             params = backtest.parameters or {}
             config = {
                 "start_date": backtest.start_date,
@@ -101,16 +99,22 @@ async def _run_backtest(backtest_id: str):
                 "timeframe": backtest.timeframe,
                 "instruments": backtest.instruments,
                 "parameters": params,
-                # Engine settings (passed alongside strategy params for convenience)
                 "slippage_percent": float(params.get("slippage_percent", 0.05)),
                 "commission_type": params.get("commission_type", "zerodha"),
                 "flat_commission": float(params.get("flat_commission", 0.0)),
                 "fill_at": params.get("fill_at", "next_open"),
             }
 
-            # Progress callback for Socket.IO updates
+            # Progress callback — updates Celery task state (stored in Redis)
+            _last_update = {"percent": 0}
+
             async def progress_callback(current_bar: int, total_bars: int):
                 percent = (current_bar / total_bars) * 100
+                # Throttle: only update every 2% or on final bar
+                if percent - _last_update["percent"] < 2 and current_bar < total_bars:
+                    return
+                _last_update["percent"] = percent
+
                 current_date = ""
                 try:
                     if runner.data_handler and runner.data_handler.current_timestamp:
@@ -119,11 +123,18 @@ async def _run_backtest(backtest_id: str):
                 except Exception:
                     pass
 
-                try:
-                    from app.websocket.server import emit_backtest_progress
-                    await emit_backtest_progress(str(backtest.id), percent, current_date)
-                except Exception:
-                    pass  # Socket.IO may not be running in Celery worker
+                if _current_celery_task:
+                    try:
+                        _current_celery_task.update_state(
+                            state="PROGRESS",
+                            meta={
+                                "percent": round(percent, 1),
+                                "current_date": current_date,
+                                "backtest_id": backtest_id,
+                            },
+                        )
+                    except Exception:
+                        pass
 
             runner = BacktestRunner(str(backtest.id), strategy.code, config)
             results = await runner.run(ohlcv_records, progress_callback=progress_callback)
@@ -131,15 +142,14 @@ async def _run_backtest(backtest_id: str):
             # Metrics are nested under "metrics" key in the runner output
             metrics = results.get("metrics", {})
 
-            # Transform equity_curve: runner uses {timestamp, equity} -> frontend expects {date, value}
-            # Keep full ISO timestamps so intraday timeframes (1h, 15m, etc.) render correctly
+            # Transform equity_curve
             raw_equity = results.get("equity_curve") or []
             equity_curve = []
             for pt in raw_equity:
                 ts = pt.get("timestamp", "")
                 equity_curve.append({"date": str(ts), "value": pt.get("equity", 0)})
 
-            # Transform drawdown_curve: runner uses {timestamp, drawdown_percent} -> frontend expects {date, drawdown}
+            # Transform drawdown_curve
             raw_drawdown = results.get("drawdown_curve") or []
             drawdown_curve = []
             for pt in raw_drawdown:
@@ -199,32 +209,16 @@ async def _run_backtest(backtest_id: str):
                 db.add_all(trade_records)
 
             await db.commit()
-
-            # Emit completion via Socket.IO
-            try:
-                from app.websocket.server import emit_backtest_completed
-                await emit_backtest_completed(str(backtest.id), {
-                    "total_return": metrics.get("total_return"),
-                    "sharpe_ratio": metrics.get("sharpe_ratio"),
-                    "total_trades": metrics.get("total_trades"),
-                })
-            except Exception:
-                pass
-
             logger.info(f"Backtest {backtest_id} completed successfully")
 
         except Exception as e:
             logger.error(f"Backtest {backtest_id} failed: {e}")
             try:
+                await db.rollback()
                 await update_backtest_status(
                     db, backtest.id, "failed", error_message=str(e)
                 )
                 await db.commit()
-            except Exception:
-                pass
-            try:
-                from app.websocket.server import emit_backtest_error
-                await emit_backtest_error(str(backtest.id), str(e))
             except Exception:
                 pass
 
@@ -232,10 +226,13 @@ async def _run_backtest(backtest_id: str):
 @celery_app.task(bind=True, name="run_backtest", max_retries=0)
 def run_backtest(self, backtest_id: str):
     """Celery task to run a backtest."""
+    global _current_celery_task
+    _current_celery_task = self
     logger.info(f"Starting backtest {backtest_id}")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(_run_backtest(backtest_id))
     finally:
+        _current_celery_task = None
         loop.close()

@@ -4,7 +4,7 @@ import { useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useBacktestStore } from "@/stores/backtest-store";
 import { useToastStore } from "@/stores/toast-store";
-import { connectSocket, disconnectSocket, getSocket } from "@/lib/socket-client";
+import apiClient from "@/lib/api-client";
 import { formatCurrency, formatPercent, cn } from "@/lib/utils";
 import {
   Card,
@@ -65,40 +65,37 @@ export default function BacktestsPage() {
 
   useEffect(() => {
     fetchBacktests();
-
-    // Connect Socket.IO for live progress updates
-    const socket = connectSocket();
-
-    socket.on("backtest_progress", (data: any) => {
-      setProgress(data.backtest_id, data.percent, data.current_date);
-    });
-
-    socket.on("backtest_completed", (data: any) => {
-      markCompleted(data.backtest_id);
-      fetchBacktests();
-    });
-
-    socket.on("backtest_error", (data: any) => {
-      markFailed(data.backtest_id);
-      fetchBacktests();
-    });
-
-    // Subscribe to all running backtests
-    return () => {
-      socket.off("backtest_progress");
-      socket.off("backtest_completed");
-      socket.off("backtest_error");
-    };
   }, []);
 
-  // Subscribe to running backtests when list changes
+  // Poll progress for running/pending backtests
   useEffect(() => {
-    const socket = getSocket();
-    backtests
-      .filter((b) => b.status === "running" || b.status === "pending")
-      .forEach((b) => {
-        socket.emit("subscribe_backtest", { backtest_id: b.id });
-      });
+    const running = backtests.filter((b) => b.status === "running" || b.status === "pending");
+    if (running.length === 0) return;
+
+    const poll = async () => {
+      for (const b of running) {
+        try {
+          const res = await apiClient.get(`/backtests/${b.id}/progress`, { _suppressToast: true } as any);
+          const data = res.data;
+          if (data.status === "running" && data.percent != null) {
+            setProgress(b.id, data.percent, data.current_date || "");
+          }
+          if (data.status === "completed") {
+            markCompleted(b.id);
+            fetchBacktests();
+          } else if (data.status === "failed") {
+            markFailed(b.id);
+            fetchBacktests();
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 1500);
+    return () => clearInterval(interval);
   }, [backtests]);
 
   return (

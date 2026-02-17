@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useBacktestStore } from "@/stores/backtest-store";
-import { connectSocket } from "@/lib/socket-client";
 import { formatCurrency, formatPercent, cn } from "@/lib/utils";
 import apiClient from "@/lib/api-client";
 import {
@@ -556,38 +555,36 @@ export default function BacktestDetailPage() {
   useEffect(() => {
     fetchBacktest(backtestId);
     fetchTrades(backtestId);
-
-    const socket = connectSocket();
-    socket.emit("subscribe_backtest", { backtest_id: backtestId });
-
-    socket.on("backtest_progress", (data: any) => {
-      if (data.backtest_id === backtestId) {
-        setProgress(data.backtest_id, data.percent, data.current_date);
-      }
-    });
-
-    socket.on("backtest_completed", (data: any) => {
-      if (data.backtest_id === backtestId) {
-        markCompleted(data.backtest_id);
-        fetchBacktest(backtestId);
-        fetchTrades(backtestId);
-      }
-    });
-
-    socket.on("backtest_error", (data: any) => {
-      if (data.backtest_id === backtestId) {
-        markFailed(data.backtest_id);
-        fetchBacktest(backtestId);
-      }
-    });
-
-    return () => {
-      socket.emit("unsubscribe_backtest", { backtest_id: backtestId });
-      socket.off("backtest_progress");
-      socket.off("backtest_completed");
-      socket.off("backtest_error");
-    };
   }, [backtestId]);
+
+  // Poll for progress when backtest is running/pending
+  useEffect(() => {
+    if (!bt || (bt.status !== "running" && bt.status !== "pending")) return;
+
+    const poll = async () => {
+      try {
+        const res = await apiClient.get(`/backtests/${backtestId}/progress`, { _suppressToast: true } as any);
+        const data = res.data;
+        if (data.status === "running" && data.percent != null) {
+          setProgress(backtestId, data.percent, data.current_date || "");
+        }
+        if (data.status === "completed") {
+          markCompleted(backtestId);
+          fetchBacktest(backtestId);
+          fetchTrades(backtestId);
+        } else if (data.status === "failed") {
+          markFailed(backtestId);
+          fetchBacktest(backtestId);
+        }
+      } catch {
+        // Silently ignore polling errors
+      }
+    };
+
+    poll(); // Initial check
+    const interval = setInterval(poll, 1000);
+    return () => clearInterval(interval);
+  }, [bt?.status, backtestId]);
 
   // Fetch logs when switching to logs tab
   useEffect(() => {

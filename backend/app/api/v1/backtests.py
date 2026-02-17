@@ -117,6 +117,33 @@ async def get_backtest_logs(
     return backtest.logs or []
 
 
+@router.get("/{backtest_id}/progress")
+async def get_backtest_progress(
+    backtest_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get real-time progress of a running backtest from Celery task state."""
+    backtest = await backtest_service.get_backtest(db, backtest_id, current_user.id)
+    if backtest.status not in ("pending", "running"):
+        return {"status": backtest.status, "percent": 100 if backtest.status == "completed" else 0}
+
+    if backtest.celery_task_id:
+        from celery.result import AsyncResult
+        from app.tasks.celery_app import celery_app as app
+        result = AsyncResult(backtest.celery_task_id, app=app)
+        if result.state == "PROGRESS" and isinstance(result.info, dict):
+            return {
+                "status": "running",
+                "percent": result.info.get("percent", 0),
+                "current_date": result.info.get("current_date", ""),
+            }
+        elif result.state == "STARTED":
+            return {"status": "running", "percent": 0}
+
+    return {"status": backtest.status, "percent": 0}
+
+
 @router.post("/{backtest_id}/cancel")
 async def cancel_backtest(
     backtest_id: uuid.UUID,

@@ -25,13 +25,13 @@ class Backtest(Base, UUIDMixin, TimestampMixin):
     instruments: Mapped[list] = mapped_column(JSONB, default=list)
 
     # Result metrics
-    total_return: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    cagr: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    sharpe_ratio: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    sortino_ratio: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    max_drawdown: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    win_rate: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
-    profit_factor: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    total_return: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    cagr: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    sharpe_ratio: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    sortino_ratio: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    max_drawdown: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    win_rate: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
+    profit_factor: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     total_trades: Mapped[int | None] = mapped_column(Integer, nullable=True)
     avg_trade_pnl: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
 
