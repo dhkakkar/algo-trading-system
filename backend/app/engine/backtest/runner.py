@@ -163,6 +163,14 @@ class BacktestContext(TradingContext):
             return float(bar["close"])
         return None
 
+    def get_bar_ist_time(self) -> tuple:
+        """Return ``(hour, minute)`` of the current bar in IST."""
+        ts = self._runner.data_handler.current_timestamp
+        if ts is None:
+            return (0, 0)
+        ts_ist = _to_ist(ts)
+        return (ts_ist.hour, ts_ist.minute)
+
     # ------------------------------------------------------------------
     # Order management
     # ------------------------------------------------------------------
@@ -284,7 +292,7 @@ class BacktestContext(TradingContext):
     def get_positions(self) -> list[PositionInfo]:
         """Return all open positions as PositionInfo instances."""
         positions = self._runner.portfolio.get_all_positions()
-        current_prices = self._runner.data_handler.get_current_prices()
+        current_prices = self._runner._get_all_current_prices()
 
         result = []
         for pos in positions:
@@ -319,7 +327,7 @@ class BacktestContext(TradingContext):
         if pos is None:
             return None
 
-        current_prices = self._runner.data_handler.get_current_prices()
+        current_prices = self._runner._get_all_current_prices()
         current_price = current_prices.get(symbol, pos["avg_price"])
         qty = pos["quantity"]
         avg_price = pos["avg_price"]
@@ -344,7 +352,7 @@ class BacktestContext(TradingContext):
 
     def get_portfolio_value(self) -> float:
         """Return total portfolio value (cash + positions at market)."""
-        current_prices = self._runner.data_handler.get_current_prices()
+        current_prices = self._runner._get_all_current_prices()
         return self._runner.portfolio.get_portfolio_value(current_prices)
 
     def get_cash(self) -> float:
@@ -443,12 +451,14 @@ class BacktestRunner(BaseRunner):
 
     def _add_log(self, level: str, message: str, source: str = "system"):
         """Append a structured log entry."""
-        ts = self.data_handler.current_timestamp if self.data_handler else datetime.now(timezone.utc)
+        ts = None
+        if self.data_handler:
+            ts = self.data_handler.current_timestamp
         self._logs.append({
             "level": level,
             "source": source,
             "message": message,
-            "timestamp": ts.isoformat() if isinstance(ts, datetime) else str(ts),
+            "timestamp": ts.isoformat() if isinstance(ts, datetime) else None,
         })
 
     # ------------------------------------------------------------------
@@ -487,7 +497,7 @@ class BacktestRunner(BaseRunner):
         return self.portfolio.get_all_positions()
 
     async def get_portfolio_value(self) -> float:
-        prices = self.data_handler.get_current_prices() if self.data_handler else {}
+        prices = self._get_all_current_prices()
         return self.portfolio.get_portfolio_value(prices)
 
     async def get_cash(self) -> float:
@@ -496,6 +506,28 @@ class BacktestRunner(BaseRunner):
     async def shutdown(self) -> None:
         """Cleanup (no-op for backtesting)."""
         pass
+
+    # ------------------------------------------------------------------
+    # Price helpers
+    # ------------------------------------------------------------------
+
+    def _get_all_current_prices(self) -> dict[str, float]:
+        """Return current prices for all symbols, including options positions.
+
+        Merges underlying prices from the data handler with options prices
+        from the options handler.  This ensures portfolio valuation and
+        position closing use the correct mark-to-market prices.
+        """
+        prices = self.data_handler.get_current_prices() if self.data_handler else {}
+        if self.options_handler and self.data_handler:
+            ts = self.data_handler.current_timestamp
+            if ts:
+                for symbol in list(self.portfolio.positions.keys()):
+                    if symbol not in prices:
+                        bar = self.options_handler.get_option_bar(symbol, ts)
+                        if bar and "close" in bar:
+                            prices[symbol] = float(bar["close"])
+        return prices
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -658,7 +690,7 @@ class BacktestRunner(BaseRunner):
                 bar_date = ts_ist.date()
                 if bar_time >= eod_time and bar_date != _last_eod_date:
                     if self.portfolio.positions:
-                        prices = self.data_handler.get_current_prices()
+                        prices = self._get_all_current_prices()
                         closed = self.portfolio.close_all_positions(prices, timestamp)
                         _last_eod_date = bar_date
                         for pos in closed:
@@ -694,8 +726,8 @@ class BacktestRunner(BaseRunner):
             # 5c. Move newly placed orders to pending queue for next-bar execution
             self._stage_new_orders()
 
-            # 5d. Record equity curve point
-            current_prices = self.data_handler.get_current_prices()
+            # 5d. Record equity curve point (include options prices for correct MTM)
+            current_prices = self._get_all_current_prices()
             self.portfolio.record_equity(timestamp, current_prices)
 
             # 5e. Progress callback
@@ -708,7 +740,7 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         # 6. Close all open positions at the end
         # ----------------------------------------------------------
-        final_prices = self.data_handler.get_current_prices()
+        final_prices = self._get_all_current_prices()
         final_ts = self.data_handler.current_timestamp or datetime.now(timezone.utc)
         closed = self.portfolio.close_all_positions(final_prices, final_ts)
         if closed:
@@ -966,21 +998,20 @@ class BacktestRunner(BaseRunner):
                         "runner",
                     )
 
-                # Notify strategy of the fill
-                if completed_trade is not None:
-                    try:
-                        filled_order = FilledOrder(
-                            order_id=fill.order_id,
-                            symbol=fill.symbol,
-                            exchange=fill.exchange,
-                            side=fill.side,
-                            quantity=fill.quantity,
-                            fill_price=fill.fill_price,
-                            timestamp=fill.timestamp,
-                        )
-                        self._strategy_instance.on_order_fill(self._context, filled_order)
-                    except Exception as exc:
-                        self._add_log("ERROR", f"on_order_fill raised: {type(exc).__name__}: {exc}", "strategy")
+                # Notify strategy of the fill (always, not just on close)
+                try:
+                    filled_order = FilledOrder(
+                        order_id=fill.order_id,
+                        symbol=fill.symbol,
+                        exchange=fill.exchange,
+                        side=fill.side,
+                        quantity=fill.quantity,
+                        fill_price=fill.fill_price,
+                        timestamp=fill.timestamp,
+                    )
+                    self._strategy_instance.on_order_fill(self._context, filled_order)
+                except Exception as exc:
+                    self._add_log("ERROR", f"on_order_fill raised: {type(exc).__name__}: {exc}", "strategy")
 
                 logger.debug(
                     "Filled %s %s x%d @ %.2f (commission=%.2f)",

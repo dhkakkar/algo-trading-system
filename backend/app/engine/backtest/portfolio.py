@@ -162,9 +162,10 @@ class Portfolio:
             if pos["side"] == "LONG":
                 position_value += price * qty
             else:
-                # SHORT: value = entry_value - (current_price - entry_price) * qty
-                # which equals 2 * avg * qty - current * qty
-                position_value += (2 * pos["avg_price"] - price) * qty
+                # SHORT: liability to buy back at current price.
+                # Cash already received sell proceeds, so position value
+                # is the negative of the current buyback cost.
+                position_value -= price * qty
 
         return self.cash + position_value
 

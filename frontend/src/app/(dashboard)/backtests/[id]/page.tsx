@@ -601,9 +601,9 @@ export default function BacktestDetailPage() {
     return () => clearInterval(interval);
   }, [bt?.status, backtestId]);
 
-  // Fetch logs when switching to logs or chart tab
+  // Fetch logs when backtest completes (needed for chart markers and log tab)
   useEffect(() => {
-    if ((activeTab !== "logs" && activeTab !== "chart") || !bt || (bt.status !== "completed" && bt.status !== "failed")) return;
+    if (!bt || (bt.status !== "completed" && bt.status !== "failed")) return;
     if (logs.length > 0) return; // already fetched
     setLogsLoading(true);
     apiClient
@@ -611,7 +611,7 @@ export default function BacktestDetailPage() {
       .then((res) => setLogs(res.data || []))
       .catch(() => setLogs([]))
       .finally(() => setLogsLoading(false));
-  }, [activeTab, bt?.id, bt?.status]);
+  }, [bt?.id, bt?.status]);
 
   // Helper: convert date strings to UNIX timestamps, deduplicate, sort
   const prepareTimeseriesData = (

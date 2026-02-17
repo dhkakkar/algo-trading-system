@@ -230,8 +230,8 @@ class NiftyEMACPRStrategy(Strategy):
         timestamp = bar["timestamp"]
         closes_list = list(close)
 
-        bar_hour = timestamp.hour if hasattr(timestamp, "hour") else 0
-        bar_min = timestamp.minute if hasattr(timestamp, "minute") else 0
+        # Use IST time for cutoff and day tracking
+        bar_hour, bar_min = ctx.get_bar_ist_time()
         bar_date = timestamp.date() if hasattr(timestamp, "date") else None
 
         # -- New day reset -------------------------------------------------

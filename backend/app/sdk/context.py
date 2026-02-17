@@ -284,6 +284,24 @@ class TradingContext:
             "get_option_chain() must be implemented by the execution engine"
         )
 
+    def get_option_price(self, tradingsymbol: str) -> float | None:
+        """Return the current close price of an option by trading symbol.
+
+        Returns ``None`` if the data is not available.
+        """
+        raise NotImplementedError(
+            "get_option_price() must be implemented by the execution engine"
+        )
+
+    def get_bar_ist_time(self) -> tuple:
+        """Return ``(hour, minute)`` of the current bar in IST.
+
+        Useful for time-based logic in strategies trading on Indian markets.
+        """
+        raise NotImplementedError(
+            "get_bar_ist_time() must be implemented by the execution engine"
+        )
+
     # ------------------------------------------------------------------
     # Parameters & logging
     # ------------------------------------------------------------------
