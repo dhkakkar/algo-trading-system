@@ -272,6 +272,7 @@ export default function LiveChart({
       .then(([ohlcvRes, lc]) => {
         if (!chartContainerRef.current) return;
         if (chartRef.current) { chartRef.current.remove(); chartRef.current = null; }
+        indicatorSeriesRef.current = {};
 
         const { createChart, ColorType } = lc;
         const isDaily = chartTimeframe === "1d";
