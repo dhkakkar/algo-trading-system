@@ -108,6 +108,42 @@ class BacktestContext(TradingContext):
                 return True
         return False
 
+    def _resolve_options_order(self, symbol: str, quantity: int, side: str) -> tuple[str, int, str, str, float | None]:
+        """When options_mode is on, translate an underlying signal into an options order.
+
+        Returns (resolved_symbol, resolved_qty, resolved_side, resolved_exchange, override_price).
+        For a BUY signal on underlying: buy ATM CE
+        For a SELL signal on underlying: buy ATM PE
+        If options_handler can't resolve, falls back to the original order.
+        """
+        oh = self._runner.options_handler
+        if not oh or not oh.enabled:
+            return symbol, quantity, side, "NSE", None
+
+        ts = self._runner.data_handler.current_timestamp
+        if not ts:
+            return symbol, quantity, side, "NSE", None
+
+        spot = self._runner.data_handler.get_current_price(symbol)
+        option = oh.resolve_option(spot, ts, side)
+        if not option:
+            self._runner._add_log("WARNING", f"Options resolve failed for {side} {symbol} @ spot {spot:.2f} — using spot", "runner")
+            return symbol, quantity, side, "NSE", None
+
+        opt_symbol = option["tradingsymbol"]
+        lot_size = option["lot_size"]
+        opt_price = option["option_price"]
+        # Always BUY the option (buy CE for long, buy PE for short)
+        resolved_qty = lot_size * max(quantity, 1)
+
+        self._runner._add_log(
+            "INFO",
+            f"Options: {side} signal → BUY {opt_symbol} (strike={option['strike']}, "
+            f"expiry={option['expiry']}, price={opt_price:.2f}, qty={resolved_qty})",
+            "runner",
+        )
+        return opt_symbol, resolved_qty, "BUY", "NFO", opt_price
+
     def buy(
         self,
         symbol: str,
@@ -131,41 +167,18 @@ class BacktestContext(TradingContext):
             self._runner._add_log("WARNING", f"BUY {symbol} blocked — time lock active at {ts.strftime('%H:%M') if ts else '?'}", "runner")
             return ""
 
-        order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
-
-        order = OrderEvent(
-            timestamp=self._runner.data_handler.current_timestamp or datetime.now(timezone.utc),
-            symbol=symbol,
-            exchange=exchange,
-            side="BUY",
-            quantity=quantity,
-            order_type=order_type.upper(),
-            order_id=order_id,
-            price=price,
-            trigger_price=price if order_type.upper() in ("SL", "SL-M") else None,
-            product=product,
-            status="pending",
-        )
-
-        self._runner._order_queue.append(order)
-        self._runner.portfolio.orders.append({
-            "order_id": order_id,
-            "symbol": symbol,
-            "exchange": exchange,
-            "side": "BUY",
-            "quantity": quantity,
-            "order_type": order_type,
-            "price": price,
-            "product": product,
-            "status": "pending",
-            "timestamp": order.timestamp.isoformat()
-            if isinstance(order.timestamp, datetime)
-            else str(order.timestamp),
-        })
-
-        self._runner._add_log("INFO", f"BUY order queued: {symbol} x{quantity} @ {price or 'MARKET'} ({order_type})", "strategy")
-        logger.debug("BUY order queued: %s x%d @ %s (%s)", symbol, quantity, price or "MARKET", order_id)
-        return order_id
+        # Options mode: close any held PE (from previous short), then buy CE
+        oh = self._runner.options_handler
+        if oh and oh.enabled:
+            # If we hold a PE option (from a previous SELL signal), close it first
+            if oh._held_option and oh._held_option.get("option_type") == "PE":
+                self._close_held_option()
+            # Now open a CE position
+            opt_sym, opt_qty, opt_side, opt_exchange, opt_price = self._resolve_options_order(symbol, quantity, "BUY")
+            if opt_exchange == "NFO":
+                return self._place_order(opt_sym, opt_qty, opt_side, order_type, opt_price, opt_exchange, "NRML", option_type="CE")
+            # Fallback to spot
+        return self._place_order(symbol, quantity, "BUY", order_type, price, exchange, product)
 
     def sell(
         self,
@@ -186,13 +199,50 @@ class BacktestContext(TradingContext):
             self._runner._add_log("WARNING", f"SELL {symbol} blocked — time lock active at {ts.strftime('%H:%M') if ts else '?'}", "runner")
             return ""
 
+        # Options mode: close any held CE (from previous long), then buy PE
+        oh = self._runner.options_handler
+        if oh and oh.enabled:
+            # If we hold a CE option (from a previous BUY signal), close it first
+            if oh._held_option and oh._held_option.get("option_type") == "CE":
+                self._close_held_option()
+            # Now open a PE position
+            opt_sym, opt_qty, opt_side, opt_exchange, opt_price = self._resolve_options_order(symbol, quantity, "SELL")
+            if opt_exchange == "NFO":
+                return self._place_order(opt_sym, opt_qty, opt_side, order_type, opt_price, opt_exchange, "NRML", option_type="PE")
+            # Fallback to spot
+        return self._place_order(symbol, quantity, "SELL", order_type, price, exchange, product)
+
+    def _close_held_option(self):
+        """Close a previously opened options position by selling it."""
+        oh = self._runner.options_handler
+        if not oh or not oh._held_option:
+            return
+        held = oh._held_option
+        opt_sym = held["tradingsymbol"]
+        opt_qty = held["quantity"]
+        self._runner._add_log("INFO", f"Options: closing held {held.get('option_type', '?')} {opt_sym} x{opt_qty}", "runner")
+        self._place_order(opt_sym, opt_qty, "SELL", "MARKET", None, "NFO", "NRML")
+        oh._held_option = None
+
+    def _place_order(
+        self,
+        symbol: str,
+        quantity: int,
+        side: str,
+        order_type: str = "MARKET",
+        price: float | None = None,
+        exchange: str = "NSE",
+        product: str = "MIS",
+        option_type: str | None = None,
+    ) -> str:
+        """Internal: queue an order event."""
         order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
 
         order = OrderEvent(
             timestamp=self._runner.data_handler.current_timestamp or datetime.now(timezone.utc),
             symbol=symbol,
             exchange=exchange,
-            side="SELL",
+            side=side,
             quantity=quantity,
             order_type=order_type.upper(),
             order_id=order_id,
@@ -207,7 +257,7 @@ class BacktestContext(TradingContext):
             "order_id": order_id,
             "symbol": symbol,
             "exchange": exchange,
-            "side": "SELL",
+            "side": side,
             "quantity": quantity,
             "order_type": order_type,
             "price": price,
@@ -218,8 +268,18 @@ class BacktestContext(TradingContext):
             else str(order.timestamp),
         })
 
-        self._runner._add_log("INFO", f"SELL order queued: {symbol} x{quantity} @ {price or 'MARKET'} ({order_type})", "strategy")
-        logger.debug("SELL order queued: %s x%d @ %s (%s)", symbol, quantity, price or "MARKET", order_id)
+        # Track held option
+        oh = self._runner.options_handler
+        if oh and oh.enabled and option_type and side == "BUY":
+            oh._held_option = {
+                "tradingsymbol": symbol,
+                "option_type": option_type,
+                "quantity": quantity,
+                "entry_price": price,
+            }
+
+        self._runner._add_log("INFO", f"{side} order queued: {symbol} x{quantity} @ {price or 'MARKET'} ({order_type})", "strategy")
+        logger.debug("%s order queued: %s x%d @ %s (%s)", side, symbol, quantity, price or "MARKET", order_id)
         return order_id
 
     def cancel_order(self, order_id: str) -> bool:
@@ -368,6 +428,7 @@ class BacktestRunner(BaseRunner):
         backtest_id: str,
         strategy_code: str,
         config: dict[str, Any],
+        options_handler: Optional[Any] = None,
     ) -> None:
         self.backtest_id = backtest_id
         self._strategy_code = strategy_code
@@ -383,6 +444,9 @@ class BacktestRunner(BaseRunner):
             flat_commission=config.get("flat_commission", 0.0),
         )
         self.portfolio = Portfolio(float(config.get("initial_capital", 100000)))
+
+        # Options handler (None when options_mode is off)
+        self.options_handler = options_handler
 
         # Strategy
         self._strategy_instance: Any = None
@@ -546,6 +610,13 @@ class BacktestRunner(BaseRunner):
         self._add_log("INFO", f"Backtest started — {total_bars} bars, instruments: {instruments_str}, "
                        f"capital: {self._config.get('initial_capital', 100000)}, "
                        f"timeframe: {self._config.get('timeframe', '1d')}", "runner")
+
+        if self.options_handler and self.options_handler.enabled:
+            self._add_log("INFO", f"Options mode: BUY CE on long, BUY PE on short "
+                          f"(underlying={self.options_handler.underlying_name}, "
+                          f"expiry_type={self.options_handler.expiry_type}, "
+                          f"strike_offset={self.options_handler.strike_offset}, "
+                          f"lot_size={self.options_handler.lot_size})", "runner")
 
         # Capture log messages from the strategy (print() and ctx.log())
         log_handler = _ListLogHandler(self._logs, data_handler=self.data_handler)
@@ -865,7 +936,14 @@ class BacktestRunner(BaseRunner):
                 continue
 
             # Get the bar data needed for execution
-            current_bar = self.data_handler.get_current_bar(order.symbol)
+            # For options orders, use options OHLCV; for regular, use data handler
+            current_bar = None
+            if self.options_handler and self.options_handler.enabled and order.exchange == "NFO":
+                ts = self.data_handler.current_timestamp
+                if ts:
+                    current_bar = self.options_handler.get_option_bar(order.symbol, ts)
+            if current_bar is None:
+                current_bar = self.data_handler.get_current_bar(order.symbol)
 
             # For fill_at="next_open", the "current bar" for the execution
             # handler is the bar where the order was placed, and the "next bar"

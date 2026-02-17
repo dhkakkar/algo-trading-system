@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from app.tasks.celery_app import celery_app
@@ -90,8 +90,161 @@ async def _run_backtest(backtest_id: str):
                 await db.commit()
                 return
 
-            # Run backtest
+            # --- Options mode: fetch options instruments + OHLCV data ---
             params = backtest.parameters or {}
+            options_handler = None
+
+            if params.get("options_mode"):
+                from app.models.instrument import Instrument
+                from app.engine.backtest.options_handler import OptionsHandler
+                from app.services.options_service import (
+                    underlying_name_from_symbol, strike_step_for_underlying,
+                    get_atm_strike,
+                )
+                from app.services.market_data_service import fetch_and_store_from_kite
+                import pandas as pd
+
+                options_handler = OptionsHandler({"parameters": params, "instruments": backtest.instruments})
+                raw_sym = backtest.instruments[0]
+                clean_sym = raw_sym.split(":")[-1] if ":" in raw_sym else raw_sym
+                underlying_name = underlying_name_from_symbol(clean_sym)
+                step = strike_step_for_underlying(underlying_name)
+                options_handler.set_underlying(backtest.instruments, strike_step=step)
+
+                # Try to get Kite client for fetching missing data
+                kite_client = None
+                try:
+                    from app.integrations.kite_connect.client import kite_manager
+                    kite_client = await kite_manager.get_client(db, str(backtest.user_id))
+                except Exception as exc:
+                    logger.warning("Could not get Kite client for options data: %s", exc)
+
+                # Load option instruments from DB
+                opt_instruments_result = await db.execute(
+                    select(Instrument).where(
+                        and_(
+                            Instrument.name == underlying_name,
+                            Instrument.exchange == "NFO",
+                            Instrument.instrument_type.in_(["CE", "PE"]),
+                            Instrument.expiry >= backtest.start_date,
+                            Instrument.expiry <= backtest.end_date + timedelta(days=7),
+                            Instrument.strike.isnot(None),
+                        )
+                    )
+                )
+                opt_instruments = list(opt_instruments_result.scalars().all())
+
+                if not opt_instruments:
+                    logger.warning("No option instruments found for %s — falling back to spot mode", underlying_name)
+                    options_handler = None
+                else:
+                    # Filter to relevant strikes based on underlying price range
+                    spot_prices = [float(r.close) for r in ohlcv_records if hasattr(r, "close")]
+                    min_spot = min(spot_prices) if spot_prices else 23000
+                    max_spot = max(spot_prices) if spot_prices else 23000
+                    min_strike = get_atm_strike(min_spot, step) - (5 * step)
+                    max_strike = get_atm_strike(max_spot, step) + (5 * step)
+
+                    relevant_instruments = [
+                        inst for inst in opt_instruments
+                        if inst.strike is not None
+                        and float(inst.strike) >= min_strike
+                        and float(inst.strike) <= max_strike
+                    ]
+
+                    inst_dicts = [
+                        {
+                            "tradingsymbol": inst.tradingsymbol,
+                            "strike": float(inst.strike),
+                            "expiry": inst.expiry,
+                            "instrument_type": inst.instrument_type,
+                            "instrument_token": inst.instrument_token,
+                            "lot_size": inst.lot_size,
+                        }
+                        for inst in relevant_instruments
+                    ]
+                    options_handler.load_instruments(inst_dicts)
+
+                    # Fetch options OHLCV data
+                    kite_interval = {"1m": "minute", "3m": "3minute", "5m": "5minute",
+                                     "10m": "10minute", "15m": "15minute", "30m": "30minute",
+                                     "1h": "60minute", "1d": "day"}.get(backtest.timeframe, "5minute")
+
+                    options_ohlcv: dict[str, pd.DataFrame] = {}
+                    tokens_to_fetch: list[tuple[int, str, str]] = []
+
+                    for inst in relevant_instruments:
+                        tsymbol = inst.tradingsymbol
+                        existing = await db.execute(
+                            select(OHLCVData).where(
+                                and_(
+                                    OHLCVData.instrument_token == inst.instrument_token,
+                                    OHLCVData.interval == interval,
+                                    OHLCVData.time >= start_dt,
+                                    OHLCVData.time <= end_dt,
+                                )
+                            ).order_by(OHLCVData.time.asc()).limit(1)
+                        )
+                        if existing.scalar_one_or_none():
+                            data_result = await db.execute(
+                                select(OHLCVData).where(
+                                    and_(
+                                        OHLCVData.instrument_token == inst.instrument_token,
+                                        OHLCVData.interval == interval,
+                                        OHLCVData.time >= start_dt,
+                                        OHLCVData.time <= end_dt,
+                                    )
+                                ).order_by(OHLCVData.time.asc())
+                            )
+                            records = list(data_result.scalars().all())
+                            if records:
+                                rows = [{
+                                    "open": float(r.open), "high": float(r.high),
+                                    "low": float(r.low), "close": float(r.close),
+                                    "volume": int(r.volume), "timestamp": r.time,
+                                } for r in records]
+                                df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+                                options_ohlcv[tsymbol] = df
+                        else:
+                            tokens_to_fetch.append((inst.instrument_token, tsymbol, "NFO"))
+
+                    # Fetch missing data from Kite
+                    if tokens_to_fetch and kite_client:
+                        logger.info("Fetching options OHLCV for %d instruments from Kite", len(tokens_to_fetch))
+                        for token, tsymbol, exchange in tokens_to_fetch:
+                            try:
+                                count = await fetch_and_store_from_kite(
+                                    db, kite_client, token, tsymbol, exchange,
+                                    backtest.start_date, backtest.end_date, kite_interval,
+                                )
+                                if count > 0:
+                                    data_result = await db.execute(
+                                        select(OHLCVData).where(
+                                            and_(
+                                                OHLCVData.instrument_token == token,
+                                                OHLCVData.interval == interval,
+                                                OHLCVData.time >= start_dt,
+                                                OHLCVData.time <= end_dt,
+                                            )
+                                        ).order_by(OHLCVData.time.asc())
+                                    )
+                                    records = list(data_result.scalars().all())
+                                    if records:
+                                        rows = [{
+                                            "open": float(r.open), "high": float(r.high),
+                                            "low": float(r.low), "close": float(r.close),
+                                            "volume": int(r.volume), "timestamp": r.time,
+                                        } for r in records]
+                                        df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+                                        options_ohlcv[tsymbol] = df
+                                await db.commit()
+                            except Exception as exc:
+                                logger.warning("Failed to fetch options data for %s: %s", tsymbol, exc)
+
+                    options_handler.load_ohlcv(options_ohlcv)
+                    logger.info("Options data ready: %d symbols with OHLCV", len(options_ohlcv))
+
+            # Run backtest
             config = {
                 "start_date": backtest.start_date,
                 "end_date": backtest.end_date,
@@ -136,7 +289,8 @@ async def _run_backtest(backtest_id: str):
                     except Exception:
                         pass
 
-            runner = BacktestRunner(str(backtest.id), strategy.code, config)
+            runner = BacktestRunner(str(backtest.id), strategy.code, config,
+                                    options_handler=options_handler)
             results = await runner.run(ohlcv_records, progress_callback=progress_callback)
 
             # Metrics are nested under "metrics" key in the runner output
