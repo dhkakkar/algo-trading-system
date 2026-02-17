@@ -540,6 +540,21 @@ export default function BacktestDetailPage() {
     tradeChartObjRef.current?.applyOptions(opts);
   }, [showGrid]);
 
+  // Derive traded options symbols (for instrument tabs)
+  const allChartSymbols = useMemo(() => {
+    const base = bt?.instruments || [];
+    const optionSyms: string[] = [];
+    const seen = new Set<string>();
+    trades.forEach((t) => {
+      const key = `${t.exchange}:${t.symbol}`;
+      if (t.exchange?.toUpperCase() === "NFO" && !seen.has(key)) {
+        seen.add(key);
+        optionSyms.push(key);
+      }
+    });
+    return [...base, ...optionSyms];
+  }, [bt?.instruments, trades]);
+
   // Compute detailed stats from trades
   const stats = useMemo(
     () => computeDetailedStats(trades, bt?.initial_capital ?? 100000),
@@ -586,9 +601,10 @@ export default function BacktestDetailPage() {
     return () => clearInterval(interval);
   }, [bt?.status, backtestId]);
 
-  // Fetch logs when switching to logs tab
+  // Fetch logs when switching to logs or chart tab
   useEffect(() => {
-    if (activeTab !== "logs" || !bt || (bt.status !== "completed" && bt.status !== "failed")) return;
+    if ((activeTab !== "logs" && activeTab !== "chart") || !bt || (bt.status !== "completed" && bt.status !== "failed")) return;
+    if (logs.length > 0) return; // already fetched
     setLogsLoading(true);
     apiClient
       .get(`/backtests/${backtestId}/logs`)
@@ -905,14 +921,33 @@ export default function BacktestDetailPage() {
       // Trade entry/exit markers + connecting lines
       const rawInst = chartSymbol || bt.instruments?.[0] || "";
       const parsed = parseInstrument(rawInst);
-      const symbolTrades = trades.filter(
-        (t) => t.symbol.toUpperCase() === parsed.symbol.toUpperCase()
+
+      // Determine if this chart shows an underlying instrument vs an options symbol
+      const isUnderlying = (bt.instruments || []).some(
+        (inst) => parseInstrument(inst).symbol.toUpperCase() === parsed.symbol.toUpperCase()
       );
+
+      // On underlying chart: show ALL trades (they were triggered by this underlying)
+      // On options chart: filter to only trades on that specific options symbol
+      const symbolTrades = isUnderlying
+        ? trades
+        : trades.filter((t) => t.symbol.toUpperCase() === parsed.symbol.toUpperCase());
+
+      // Build time → close lookup for underlying price (for connecting lines)
+      const priceAtTime: Record<string, number> = {};
+      if (isUnderlying) {
+        chartOHLCV.forEach((bar: any) => {
+          priceAtTime[String(parseTime(bar.time))] = Number(bar.close);
+        });
+      }
 
       const markers: any[] = [];
       symbolTrades.forEach((t, i) => {
         const isLong = t.side === "LONG" || t.side === "BUY";
         const tradeNum = i + 1;
+        // Determine option type from symbol (ends with CE or PE)
+        const sym = t.symbol.toUpperCase();
+        const optType = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : "";
 
         // Entry marker
         markers.push({
@@ -920,7 +955,9 @@ export default function BacktestDetailPage() {
           position: isLong ? "belowBar" : "aboveBar",
           color: "#22c55e",
           shape: isLong ? "arrowUp" : "arrowDown",
-          text: `#${tradeNum}`,
+          text: isUnderlying && optType
+            ? `${isLong ? "Buy" : "Sell"} ${optType} #${tradeNum}`
+            : `#${tradeNum}`,
         });
 
         // Exit marker
@@ -930,10 +967,33 @@ export default function BacktestDetailPage() {
             position: isLong ? "aboveBar" : "belowBar",
             color: "#ef4444",
             shape: isLong ? "arrowDown" : "arrowUp",
-            text: `#${tradeNum}`,
+            text: isUnderlying ? `Exit #${tradeNum}` : `#${tradeNum}`,
           });
         }
       });
+
+      // Trigger markers from logs (only on underlying chart)
+      if (isUnderlying && logs.length > 0) {
+        logs.forEach((log) => {
+          if (log.message.startsWith("BULL TRIGGER")) {
+            markers.push({
+              time: parseTime(log.timestamp),
+              position: "belowBar",
+              color: "#3b82f6",
+              shape: "circle",
+              text: "Bull",
+            });
+          } else if (log.message.startsWith("BEAR TRIGGER")) {
+            markers.push({
+              time: parseTime(log.timestamp),
+              position: "aboveBar",
+              color: "#f97316",
+              shape: "circle",
+              text: "Bear",
+            });
+          }
+        });
+      }
 
       // Markers must be sorted by time
       markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
@@ -951,10 +1011,23 @@ export default function BacktestDetailPage() {
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
-        lineSeries.setData([
-          { time: parseTime(t.entry_at), value: t.entry_price },
-          { time: parseTime(t.exit_at), value: t.exit_price },
-        ] as any);
+        if (isUnderlying) {
+          // Use underlying close prices (not options prices) for connecting lines
+          const entryVal = priceAtTime[String(parseTime(t.entry_at))];
+          const exitVal = priceAtTime[String(parseTime(t.exit_at!))];
+          if (entryVal != null && exitVal != null) {
+            lineSeries.setData([
+              { time: parseTime(t.entry_at), value: entryVal },
+              { time: parseTime(t.exit_at!), value: exitVal },
+            ] as any);
+          }
+        } else {
+          // Options chart: use actual options entry/exit prices
+          lineSeries.setData([
+            { time: parseTime(t.entry_at), value: t.entry_price },
+            { time: parseTime(t.exit_at!), value: t.exit_price },
+          ] as any);
+        }
       });
 
       // CPR levels (Pivot, TC, BC) from previous day's HLC
@@ -1056,7 +1129,7 @@ export default function BacktestDetailPage() {
     });
 
     return () => cleanup?.();
-  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators]);
+  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs]);
 
   if (loading && !bt) {
     return (
@@ -1687,30 +1760,42 @@ export default function BacktestDetailPage() {
           {/* ============================================================ */}
           {activeTab === "chart" && (
             <div className="space-y-4">
-              {/* Instrument selector (if multiple instruments) */}
-              {bt.instruments && bt.instruments.length > 1 && (
-                <div className="flex items-center gap-2">
+              {/* Instrument selector (underlying + traded options) */}
+              {allChartSymbols.length > 1 && (
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm text-muted-foreground">Instrument:</span>
-                  {bt.instruments.map((sym) => (
-                    <button
-                      key={sym}
-                      onClick={() => setChartSymbol(sym)}
-                      className={cn(
-                        "px-3 py-1 text-sm rounded-md border transition-colors",
-                        (chartSymbol || bt.instruments[0]) === sym
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "bg-background text-muted-foreground border-border hover:text-foreground"
-                      )}
-                    >
-                      {sym}
-                    </button>
-                  ))}
+                  {allChartSymbols.map((sym) => {
+                    const isOpt = sym.toUpperCase().startsWith("NFO:");
+                    const label = isOpt ? sym.split(":")[1] : sym;
+                    return (
+                      <button
+                        key={sym}
+                        onClick={() => setChartSymbol(sym)}
+                        className={cn(
+                          "px-3 py-1 text-sm rounded-md border transition-colors",
+                          (chartSymbol || allChartSymbols[0]) === sym
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background text-muted-foreground border-border hover:text-foreground"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
               {/* Legend + Indicator toggle */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" />
+                    Bull Trigger
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full bg-orange-500" />
+                    Bear Trigger
+                  </span>
                   <span className="flex items-center gap-1">
                     <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
                     Entry
@@ -1743,9 +1828,6 @@ export default function BacktestDetailPage() {
                       </span>
                     </>
                   )}
-                  <span className="text-muted-foreground/60">
-                    (#1, #2...) link entry-exit pairs
-                  </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
@@ -1798,38 +1880,49 @@ export default function BacktestDetailPage() {
               </Card>
 
               {/* Trade summary below chart */}
-              {trades.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">
-                      Trade Signals ({trades.filter((t) => t.symbol.toUpperCase() === parseInstrument(chartSymbol || bt.instruments?.[0] || "").symbol.toUpperCase()).length} trades)
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[13px]">
-                        <thead>
-                          <tr className="border-b text-left text-xs text-muted-foreground">
-                            <th className="pb-2 pr-3 font-medium">#</th>
-                            <th className="pb-2 pr-3 font-medium">Side</th>
-                            <th className="pb-2 pr-3 font-medium">Entry Date</th>
-                            <th className="pb-2 pr-3 font-medium text-right">Entry Price</th>
-                            <th className="pb-2 pr-3 font-medium">Exit Date</th>
-                            <th className="pb-2 pr-3 font-medium text-right">Exit Price</th>
-                            <th className="pb-2 pr-3 font-medium text-right">Qty</th>
-                            <th className="pb-2 font-medium text-right">Net P&L</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {trades
-                            .filter((t) => t.symbol.toUpperCase() === parseInstrument(chartSymbol || bt.instruments?.[0] || "").symbol.toUpperCase())
-                            .map((t, i) => {
+              {trades.length > 0 && (() => {
+                const selRaw = chartSymbol || bt.instruments?.[0] || "";
+                const selParsed = parseInstrument(selRaw);
+                const isUnder = (bt.instruments || []).some(
+                  (inst) => parseInstrument(inst).symbol.toUpperCase() === selParsed.symbol.toUpperCase()
+                );
+                const tableTrades = isUnder
+                  ? trades
+                  : trades.filter((t) => t.symbol.toUpperCase() === selParsed.symbol.toUpperCase());
+                return (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Trade Signals ({tableTrades.length} trades)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-[13px]">
+                          <thead>
+                            <tr className="border-b text-left text-xs text-muted-foreground">
+                              <th className="pb-2 pr-3 font-medium">#</th>
+                              <th className="pb-2 pr-3 font-medium">Side</th>
+                              <th className="pb-2 pr-3 font-medium">Symbol</th>
+                              <th className="pb-2 pr-3 font-medium">Entry Date</th>
+                              <th className="pb-2 pr-3 font-medium text-right">Entry Price</th>
+                              <th className="pb-2 pr-3 font-medium">Exit Date</th>
+                              <th className="pb-2 pr-3 font-medium text-right">Exit Price</th>
+                              <th className="pb-2 pr-3 font-medium text-right">Qty</th>
+                              <th className="pb-2 font-medium text-right">Net P&L</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tableTrades.map((t, i) => {
                               const isLong = t.side === "LONG" || t.side === "BUY";
                               return (
                                 <tr key={i} className="border-b border-border/30 hover:bg-accent/30">
                                   <td className="py-1.5 pr-3 text-muted-foreground">{i + 1}</td>
                                   <td className={cn("py-1.5 pr-3 font-medium", isLong ? "text-green-500" : "text-red-500")}>
                                     {isLong ? "Long" : "Short"}
+                                  </td>
+                                  <td className="py-1.5 pr-3 whitespace-nowrap text-xs font-mono">
+                                    {t.symbol}
                                   </td>
                                   <td className="py-1.5 pr-3 whitespace-nowrap">
                                     {new Date(t.entry_at).toLocaleString("en-IN", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
@@ -1848,12 +1941,13 @@ export default function BacktestDetailPage() {
                                 </tr>
                               );
                             })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
             </div>
           )}
 
