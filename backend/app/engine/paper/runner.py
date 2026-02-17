@@ -107,7 +107,25 @@ class PaperTradingContext(TradingContext):
         if self._runner.slog:
             self._runner.slog.info(message, source="strategy")
 
+    def _is_time_locked(self) -> bool:
+        """Check if the current time falls within any time lock window."""
+        locks = getattr(self._runner, "_time_locks", [])
+        if not locks:
+            return False
+        now = datetime.now(IST)
+        bar_time = (now.hour, now.minute)
+        for (sh, sm), (eh, em) in locks:
+            if (sh, sm) <= bar_time < (eh, em):
+                return True
+        return False
+
     def buy(self, symbol: str, quantity: int, order_type: str = "MARKET", price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
+        if self._is_time_locked():
+            now = datetime.now(IST)
+            if self._runner.slog:
+                self._runner.slog.warning(f"BUY {symbol} blocked — time lock active at {now.strftime('%H:%M')}", source="runner")
+            return ""
+
         order_id = f"PT-{uuid.uuid4().hex[:8]}"
         order = OrderEvent(
             timestamp=datetime.now(timezone.utc),
@@ -128,6 +146,12 @@ class PaperTradingContext(TradingContext):
         return order_id
 
     def sell(self, symbol: str, quantity: int, order_type: str = "MARKET", price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
+        if self._is_time_locked():
+            now = datetime.now(IST)
+            if self._runner.slog:
+                self._runner.slog.warning(f"SELL {symbol} blocked — time lock active at {now.strftime('%H:%M')}", source="runner")
+            return ""
+
         order_id = f"PT-{uuid.uuid4().hex[:8]}"
         order = OrderEvent(
             timestamp=datetime.now(timezone.utc),
@@ -238,6 +262,29 @@ class PaperTradingRunner(BaseRunner):
         self._tf_seconds: int = TIMEFRAME_SECONDS.get(self._timeframe, 300)
         self._current_bars: dict[str, dict] = {}  # symbol -> {open,high,low,close,volume,bar_start}
 
+        # EOD square-off + time locks from parameters
+        params = config.get("parameters", {})
+        eod_str = params.get("eod_square_off_time", "")
+        if eod_str:
+            try:
+                h, m = map(int, eod_str.split(":"))
+                self._eod_time: tuple[int, int] | None = (h, m)
+            except (ValueError, AttributeError):
+                self._eod_time = None
+        else:
+            self._eod_time = None
+        self._eod_done_today: str | None = None  # date string of last EOD
+
+        raw_locks = params.get("time_locks", [])
+        self._time_locks: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for lock in raw_locks:
+            try:
+                sh, sm = map(int, lock["start"].split(":"))
+                eh, em = map(int, lock["end"].split(":"))
+                self._time_locks.append(((sh, sm), (eh, em)))
+            except (ValueError, KeyError, AttributeError):
+                continue
+
     # BaseRunner interface
     async def initialize(self, strategy_code: str, params: dict, instruments: list) -> None:
         self._strategy_code = strategy_code
@@ -282,6 +329,30 @@ class PaperTradingRunner(BaseRunner):
                 if price < cur["low"]:
                     cur["low"] = price
                 cur["close"] = price
+
+        # EOD square-off check
+        if self._eod_time:
+            ist_now = datetime.now(IST)
+            now_time = (ist_now.hour, ist_now.minute)
+            today_str = ist_now.strftime("%Y-%m-%d")
+            if now_time >= self._eod_time and self._eod_done_today != today_str:
+                self._eod_done_today = today_str
+                if self.portfolio.positions:
+                    prices = {s: self.broker.get_price(s) or 0 for s in self._tracked_symbols}
+                    closed = self.portfolio.close_all_positions(prices, ist_now)
+                    for pos in closed:
+                        sym = pos.get("symbol", "?")
+                        pnl = pos.get("pnl", 0)
+                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
+                        if self._user_id:
+                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                                "symbol": sym, "side": pos.get("side", ""),
+                                "pnl": pnl, "mode": "paper", "reason": "EOD square-off",
+                            })
+                    await self._persist_eod_trades(closed)
+                if self._order_queue:
+                    self.slog.info(f"EOD: cancelled {len(self._order_queue)} pending order(s)", source="runner")
+                    self._order_queue.clear()
 
         # Try to fill pending orders on every tick
         await self._process_orders()
@@ -398,6 +469,11 @@ class PaperTradingRunner(BaseRunner):
             f"capital={self._config.get('initial_capital', 100000)})",
             source="system",
         )
+        if self._eod_time:
+            self.slog.info(f"EOD square-off enabled at {self._eod_time[0]:02d}:{self._eod_time[1]:02d}", source="system")
+        if self._time_locks:
+            locks_str = ", ".join(f"{s[0]:02d}:{s[1]:02d}-{e[0]:02d}:{e[1]:02d}" for (s, e) in self._time_locks)
+            self.slog.info(f"Time locks active: {locks_str}", source="system")
         logger.info("Paper trading session %s started (timeframe=%s, tf_seconds=%d)",
                      self.session_id, self._timeframe, self._tf_seconds)
 
@@ -553,6 +629,11 @@ class PaperTradingRunner(BaseRunner):
                 await db.commit()
         except Exception as exc:
             logger.warning("Failed to persist paper trade: %s", exc)
+
+    async def _persist_eod_trades(self, closed_trades: list[dict]):
+        """Persist EOD square-off trades to the database."""
+        for trade in closed_trades:
+            await self._persist_trade(trade)
 
     def get_state_snapshot(self) -> dict:
         """Return current state for Socket.IO emission."""

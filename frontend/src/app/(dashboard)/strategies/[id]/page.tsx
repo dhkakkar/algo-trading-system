@@ -92,6 +92,9 @@ export default function EditStrategyPage() {
   const [showTradingPanel, setShowTradingPanel] = useState<"paper" | "live" | null>(null);
   const [tradingCapital, setTradingCapital] = useState("100000");
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [tradeEodEnabled, setTradeEodEnabled] = useState(true);
+  const [tradeEodTime, setTradeEodTime] = useState("15:10");
+  const [tradeTimeLocks, setTradeTimeLocks] = useState<{ start: string; end: string }[]>([]);
   const [validationResult, setValidationResult] = useState<{
     valid: boolean;
     error: string | null;
@@ -268,6 +271,10 @@ export default function EditStrategyPage() {
         initial_capital: parseFloat(tradingCapital) || 100000,
         instruments: instruments.length > 0 ? instruments : undefined,
         timeframe,
+        parameters: {
+          eod_square_off_time: tradeEodEnabled ? tradeEodTime : "",
+          time_locks: tradeTimeLocks.filter((l) => l.start && l.end),
+        },
       });
 
       // Auto-start the session
@@ -626,64 +633,133 @@ export default function EditStrategyPage() {
       {/* Trading session config panel */}
       {showTradingPanel && (
         <div
-          className={`flex items-center gap-4 rounded-lg border p-4 flex-shrink-0 ${
+          className={`rounded-lg border p-4 flex-shrink-0 space-y-3 ${
             showTradingPanel === "paper"
               ? "border-blue-500/50 bg-blue-500/10"
               : "border-orange-500/50 bg-orange-500/10"
           }`}
         >
-          {showTradingPanel === "paper" ? (
-            <Play className="h-5 w-5 text-blue-600 flex-shrink-0" />
-          ) : (
-            <Zap className="h-5 w-5 text-orange-600 flex-shrink-0" />
-          )}
-          <div className="flex items-center gap-3 flex-1 flex-wrap">
-            <span className="text-sm font-medium">
-              {showTradingPanel === "paper" ? "Paper Trading" : "Live Trading"}
-            </span>
-            <div className="flex items-center gap-2">
-              <Label htmlFor="trading-capital" className="text-sm whitespace-nowrap">
-                Capital
-              </Label>
-              <Input
-                id="trading-capital"
-                type="number"
-                value={tradingCapital}
-                onChange={(e) => setTradingCapital(e.target.value)}
-                className="w-32 h-8 text-sm"
-              />
+          <div className="flex items-center gap-4">
+            {showTradingPanel === "paper" ? (
+              <Play className="h-5 w-5 text-blue-600 flex-shrink-0" />
+            ) : (
+              <Zap className="h-5 w-5 text-orange-600 flex-shrink-0" />
+            )}
+            <div className="flex items-center gap-3 flex-1 flex-wrap">
+              <span className="text-sm font-medium">
+                {showTradingPanel === "paper" ? "Paper Trading" : "Live Trading"}
+              </span>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="trading-capital" className="text-sm whitespace-nowrap">
+                  Capital
+                </Label>
+                <Input
+                  id="trading-capital"
+                  type="number"
+                  value={tradingCapital}
+                  onChange={(e) => setTradingCapital(e.target.value)}
+                  className="w-32 h-8 text-sm"
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                Timeframe: {timeframe} | Instruments: {instruments.length > 0 ? instruments.join(", ") : "from strategy code"}
+              </span>
             </div>
-            <span className="text-xs text-muted-foreground">
-              Timeframe: {timeframe} | Instruments: {instruments.length > 0 ? instruments.join(", ") : "from strategy code"}
-            </span>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowTradingPanel(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => handleStartTrading(showTradingPanel)}
+                disabled={isCreatingSession}
+                className={
+                  showTradingPanel === "paper"
+                    ? "bg-blue-600 hover:bg-blue-700"
+                    : "bg-orange-600 hover:bg-orange-700"
+                }
+              >
+                {isCreatingSession ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : showTradingPanel === "paper" ? (
+                  <Play className="h-4 w-4 mr-2" />
+                ) : (
+                  <Zap className="h-4 w-4 mr-2" />
+                )}
+                Start {showTradingPanel === "paper" ? "Paper" : "Live"} Trading
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowTradingPanel(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => handleStartTrading(showTradingPanel)}
-              disabled={isCreatingSession}
-              className={
-                showTradingPanel === "paper"
-                  ? "bg-blue-600 hover:bg-blue-700"
-                  : "bg-orange-600 hover:bg-orange-700"
-              }
-            >
-              {isCreatingSession ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : showTradingPanel === "paper" ? (
-                <Play className="h-4 w-4 mr-2" />
-              ) : (
-                <Zap className="h-4 w-4 mr-2" />
+          {/* EOD Square-off & Time Locks */}
+          <div className="flex items-start gap-3 pl-9 flex-wrap">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="trade-eod-enabled"
+                checked={tradeEodEnabled}
+                onChange={(e) => setTradeEodEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <Label htmlFor="trade-eod-enabled" className="text-sm whitespace-nowrap flex items-center gap-1">
+                <Clock className="h-3.5 w-3.5" /> EOD Square-off
+              </Label>
+              {tradeEodEnabled && (
+                <Input
+                  type="time"
+                  value={tradeEodTime}
+                  onChange={(e) => setTradeEodTime(e.target.value)}
+                  className="w-28 h-8 text-sm"
+                />
               )}
-              Start {showTradingPanel === "paper" ? "Paper" : "Live"} Trading
-            </Button>
+            </div>
+            <div className="border-l border-border pl-3 flex items-start gap-2">
+              <Label className="text-sm whitespace-nowrap flex items-center gap-1 pt-1">
+                <Lock className="h-3.5 w-3.5" /> Time Locks
+              </Label>
+              <div className="flex flex-col gap-1.5">
+                {tradeTimeLocks.map((lock, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      type="time"
+                      value={lock.start}
+                      onChange={(e) => {
+                        const updated = [...tradeTimeLocks];
+                        updated[i] = { ...updated[i], start: e.target.value };
+                        setTradeTimeLocks(updated);
+                      }}
+                      className="w-28 h-7 text-sm"
+                    />
+                    <span className="text-xs text-muted-foreground">to</span>
+                    <Input
+                      type="time"
+                      value={lock.end}
+                      onChange={(e) => {
+                        const updated = [...tradeTimeLocks];
+                        updated[i] = { ...updated[i], end: e.target.value };
+                        setTradeTimeLocks(updated);
+                      }}
+                      className="w-28 h-7 text-sm"
+                    />
+                    <button
+                      onClick={() => setTradeTimeLocks(tradeTimeLocks.filter((_, j) => j !== i))}
+                      className="text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setTradeTimeLocks([...tradeTimeLocks, { start: "09:15", end: "09:30" }])}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Plus className="h-3 w-3" /> Add time lock
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

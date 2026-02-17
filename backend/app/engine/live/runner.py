@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 from app.engine.common.base_runner import BaseRunner
@@ -20,6 +20,8 @@ from app.schemas.notifications import NotificationEventType
 from app.services.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 class LiveTradingContext(TradingContext):
@@ -56,8 +58,25 @@ class LiveTradingContext(TradingContext):
         if self._runner.slog:
             self._runner.slog.info(message, source="strategy")
 
+    def _is_time_locked(self) -> bool:
+        """Check if the current time falls within any time lock window."""
+        locks = getattr(self._runner, "_time_locks", [])
+        if not locks:
+            return False
+        now = datetime.now(IST)
+        bar_time = (now.hour, now.minute)
+        for (sh, sm), (eh, em) in locks:
+            if (sh, sm) <= bar_time < (eh, em):
+                return True
+        return False
+
     def buy(self, symbol: str, quantity: int, order_type: str = "MARKET",
             price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
+        if self._is_time_locked():
+            now = datetime.now(IST)
+            self._runner.slog.warning(f"BUY {symbol} blocked — time lock active at {now.strftime('%H:%M')}", source="runner")
+            return ""
+
         # Risk check
         positions = self._runner.portfolio.get_all_positions()
         allowed, reason = self._runner.risk_manager.validate_order(
@@ -90,6 +109,11 @@ class LiveTradingContext(TradingContext):
 
     def sell(self, symbol: str, quantity: int, order_type: str = "MARKET",
              price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
+        if self._is_time_locked():
+            now = datetime.now(IST)
+            self._runner.slog.warning(f"SELL {symbol} blocked — time lock active at {now.strftime('%H:%M')}", source="runner")
+            return ""
+
         positions = self._runner.portfolio.get_all_positions()
         allowed, reason = self._runner.risk_manager.validate_order(
             symbol, "SELL", quantity, price or self._runner._current_prices.get(symbol),
@@ -193,6 +217,29 @@ class LiveTradingRunner(BaseRunner):
         self._logs: list[str] = []
         self.slog = SessionLogger(session_id, db_session_factory)
 
+        # EOD square-off + time locks from parameters
+        params = config.get("parameters", {})
+        eod_str = params.get("eod_square_off_time", "")
+        if eod_str:
+            try:
+                h, m = map(int, eod_str.split(":"))
+                self._eod_time: tuple[int, int] | None = (h, m)
+            except (ValueError, AttributeError):
+                self._eod_time = None
+        else:
+            self._eod_time = None
+        self._eod_done_today: str | None = None
+
+        raw_locks = params.get("time_locks", [])
+        self._time_locks: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for lock in raw_locks:
+            try:
+                sh, sm = map(int, lock["start"].split(":"))
+                eh, em = map(int, lock["end"].split(":"))
+                self._time_locks.append(((sh, sm), (eh, em)))
+            except (ValueError, KeyError, AttributeError):
+                continue
+
     async def initialize(self, strategy_code: str, params: dict, instruments: list) -> None:
         self._strategy_code = strategy_code
         self._config["parameters"] = params
@@ -204,6 +251,34 @@ class LiveTradingRunner(BaseRunner):
 
         self._current_prices.update(data)
         self._tracked_symbols.update(data.keys())
+
+        # EOD square-off check
+        if self._eod_time:
+            ist_now = datetime.now(IST)
+            now_time = (ist_now.hour, ist_now.minute)
+            today_str = ist_now.strftime("%Y-%m-%d")
+            if now_time >= self._eod_time and self._eod_done_today != today_str:
+                self._eod_done_today = today_str
+                if self.portfolio.positions:
+                    closed = self.portfolio.close_all_positions(self._current_prices, ist_now)
+                    for pos in closed:
+                        sym = pos.get("symbol", "?")
+                        pnl = pos.get("pnl", 0)
+                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
+                        if self._user_id:
+                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                                "symbol": sym, "side": pos.get("side", ""),
+                                "pnl": pnl, "mode": "live", "reason": "EOD square-off",
+                            })
+                # Also try to cancel pending broker orders
+                if self._pending_broker_orders:
+                    self.slog.info(f"EOD: cancelling {len(self._pending_broker_orders)} pending broker order(s)", source="runner")
+                    for oid in list(self._pending_broker_orders.keys()):
+                        try:
+                            self.executor.cancel_order(oid)
+                        except Exception:
+                            pass
+                    self._pending_broker_orders.clear()
 
         # Check pending order statuses
         await self._check_order_statuses()
@@ -282,6 +357,11 @@ class LiveTradingRunner(BaseRunner):
             f"capital={self._config.get('initial_capital', 100000)})",
             source="system",
         )
+        if self._eod_time:
+            self.slog.info(f"EOD square-off enabled at {self._eod_time[0]:02d}:{self._eod_time[1]:02d}", source="system")
+        if self._time_locks:
+            locks_str = ", ".join(f"{s[0]:02d}:{s[1]:02d}-{e[0]:02d}:{e[1]:02d}" for (s, e) in self._time_locks)
+            self.slog.info(f"Time locks active: {locks_str}", source="system")
         logger.info("Live trading session %s started", self.session_id)
 
     def pause(self):
