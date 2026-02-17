@@ -402,8 +402,13 @@ async def get_session_snapshot(
     db: AsyncSession = Depends(get_db),
 ):
     """Get real-time snapshot of a running session (positions, P&L, prices)."""
-    await trading_service.get_session(db, session_id, current_user.id)
+    session = await trading_service.get_session(db, session_id, current_user.id)
     runner = trading_service.get_active_runner(str(session_id))
     if not runner:
+        # Runner lost (e.g. backend restart) — sync DB status
+        if session.status == "running":
+            session.status = "stopped"
+            db.add(session)
+            await db.commit()
         raise BadRequestException("Session is not active")
     return runner.get_state_snapshot()

@@ -127,9 +127,13 @@ export const useTradingStore = create<TradingState>((set, get) => ({
       const detail = err.response?.data?.detail;
       const status = err.response?.status;
       if (status === 400 && detail === "Session is not active") {
-        // Expected when session is stopped — refresh session to update status and stop polling
-        set({ snapshotError: null });
-        get().fetchSession(id);
+        // Runner lost (e.g. backend restart) — mark session stopped locally to stop polling
+        const cur = get().currentSession;
+        if (cur && cur.id === id && cur.status === "running") {
+          set({ currentSession: { ...cur, status: "stopped" }, snapshotError: null });
+        } else {
+          set({ snapshotError: null });
+        }
       } else {
         set({
           snapshotError: detail || `Snapshot failed (HTTP ${status || "network error"})`,
