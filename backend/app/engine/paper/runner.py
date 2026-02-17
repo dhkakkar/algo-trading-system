@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 from app.engine.common.base_runner import BaseRunner
@@ -16,6 +16,35 @@ from app.sdk.types import FilledOrder, PositionInfo
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Bar-aggregation helpers
+# ---------------------------------------------------------------------------
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+TIMEFRAME_SECONDS: dict[str, int] = {
+    "1m": 60, "3m": 180, "5m": 300, "10m": 600,
+    "15m": 900, "30m": 1800, "1h": 3600, "1d": 86400,
+}
+
+
+def _bar_start_time(dt: datetime, tf_seconds: int) -> datetime:
+    """Return the start of the bar period that contains *dt*, aligned to IST."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(IST)
+    if tf_seconds >= 86400:
+        return ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight = ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    secs = int((ist - midnight).total_seconds())
+    aligned = (secs // tf_seconds) * tf_seconds
+    return midnight + timedelta(seconds=aligned)
+
+
+def _clean_symbol(s: str) -> str:
+    """Strip exchange prefix: 'NSE:SBIN' -> 'SBIN'."""
+    return s.split(":")[-1] if ":" in s else s
+
 
 class PaperTradingContext(TradingContext):
     """TradingContext wired to PaperTradingRunner for live simulated trading."""
@@ -24,22 +53,41 @@ class PaperTradingContext(TradingContext):
         super().__init__(params=params)
         self._runner = runner
 
+    def _primary_symbol(self) -> str:
+        """Resolve the primary instrument symbol (clean, no exchange prefix)."""
+        if self._runner._instruments:
+            inst = self._runner._instruments[0]
+            raw = inst if isinstance(inst, str) else inst.get("symbol", "")
+            return _clean_symbol(raw)
+        return ""
+
     def get_historical_data(self, symbol: str, exchange: str = "NSE", periods: int = 100, interval: str = "1d"):
-        # Return cached historical data from runner
-        return self._runner.get_cached_history(symbol, periods)
+        return self._runner.get_cached_history(_clean_symbol(symbol), periods)
 
     def get_current_price(self, symbol: str, exchange: str = "NSE") -> float:
-        price = self._runner.broker.get_price(symbol)
+        sym = _clean_symbol(symbol)
+        price = self._runner.broker.get_price(sym)
         if price is None:
-            raise ValueError(f"No live price available for {symbol}")
+            raise ValueError(f"No live price available for {sym}")
         return price
 
     def get_current_bar(self, symbol: str | None = None) -> dict:
-        if symbol is None and self._runner._instruments:
-            symbol = self._runner._instruments[0] if isinstance(self._runner._instruments[0], str) else self._runner._instruments[0].get("symbol", "")
-        if not symbol:
+        sym = _clean_symbol(symbol) if symbol else self._primary_symbol()
+        if not sym:
             return {}
-        price = self._runner.broker.get_price(symbol)
+        # Return the real aggregated in-progress bar
+        bar = self._runner._current_bars.get(sym)
+        if bar:
+            return {
+                "open": bar["open"],
+                "high": bar["high"],
+                "low": bar["low"],
+                "close": bar["close"],
+                "volume": bar["volume"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        # Fallback: no bar yet, use LTP
+        price = self._runner.broker.get_price(sym)
         return {
             "open": price or 0,
             "high": price or 0,
@@ -142,9 +190,10 @@ class PaperTradingRunner(BaseRunner):
     The runner:
     1. Loads and compiles the strategy code
     2. Subscribes to live ticks for the configured instruments
-    3. On each tick, calls strategy.on_data()
-    4. Fills orders at LTP through SimulatedBroker
-    5. Emits position/P&L updates via callback
+    3. Aggregates ticks into OHLCV bars based on the session timeframe
+    4. On bar completion, calls strategy.on_data() with real bar data
+    5. Fills orders at LTP through SimulatedBroker on every tick
+    6. Emits position/P&L updates via callback
     """
 
     def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any],
@@ -171,6 +220,11 @@ class PaperTradingRunner(BaseRunner):
         self._user_id = user_id
         self._db_session_factory = db_session_factory
 
+        # Bar aggregation
+        self._timeframe: str = config.get("timeframe", "5m")
+        self._tf_seconds: int = TIMEFRAME_SECONDS.get(self._timeframe, 300)
+        self._current_bars: dict[str, dict] = {}  # symbol -> {open,high,low,close,volume,bar_start}
+
     # BaseRunner interface
     async def initialize(self, strategy_code: str, params: dict, instruments: list) -> None:
         self._strategy_code = strategy_code
@@ -186,21 +240,50 @@ class PaperTradingRunner(BaseRunner):
         self.broker.update_prices(data)
         self._tracked_symbols.update(data.keys())
 
-        # Try to fill pending orders
+        # --- Bar aggregation ---
+        now = datetime.now(timezone.utc)
+        bar_start = _bar_start_time(now, self._tf_seconds)
+        bar_completed = False
+
+        for symbol, price in data.items():
+            cur = self._current_bars.get(symbol)
+            if cur is None:
+                # First tick for this symbol — start a new bar
+                self._current_bars[symbol] = {
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume": 0, "bar_start": bar_start,
+                }
+            elif bar_start > cur["bar_start"]:
+                # New bar period — finalize the previous bar
+                self._finalize_bar(symbol, cur)
+                bar_completed = True
+                self._current_bars[symbol] = {
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume": 0, "bar_start": bar_start,
+                }
+            else:
+                # Same bar — update high / low / close
+                if price > cur["high"]:
+                    cur["high"] = price
+                if price < cur["low"]:
+                    cur["low"] = price
+                cur["close"] = price
+
+        # Try to fill pending orders on every tick
         await self._process_orders()
 
-        # Call strategy on_data
-        if self._strategy_instance and self._context:
+        # Call strategy only when a bar completes (matches backtest behaviour)
+        if bar_completed and self._strategy_instance and self._context:
             try:
                 self._strategy_instance.on_data(self._context)
             except Exception as exc:
                 self._logs.append(f"[ERROR] on_data: {type(exc).__name__}: {exc}")
                 logger.warning("Paper strategy on_data error: %s", exc)
 
-        # Process any new orders placed during on_data
-        await self._process_orders()
+            # Process any new orders placed during on_data
+            await self._process_orders()
 
-        # Invoke update callback (for Socket.IO emission)
+        # Invoke update callback (for Socket.IO emission) on every tick
         if self._tick_callback:
             try:
                 result = self._tick_callback(self)
@@ -208,6 +291,25 @@ class PaperTradingRunner(BaseRunner):
                     await result
             except Exception:
                 pass
+
+    def _finalize_bar(self, symbol: str, bar: dict):
+        """Append a completed bar to the historical cache DataFrame."""
+        import pandas as pd
+        new_row = pd.DataFrame([{
+            "open": bar["open"],
+            "high": bar["high"],
+            "low": bar["low"],
+            "close": bar["close"],
+            "volume": bar["volume"],
+            "timestamp": bar["bar_start"],
+        }])
+        df = self._historical_cache.get(symbol)
+        if df is not None and len(df) > 0:
+            self._historical_cache[symbol] = pd.concat([df, new_row], ignore_index=True)
+        else:
+            self._historical_cache[symbol] = new_row
+        logger.debug("Bar completed for %s: O=%.2f H=%.2f L=%.2f C=%.2f",
+                      symbol, bar["open"], bar["high"], bar["low"], bar["close"])
 
     async def place_order(self, symbol: str, exchange: str, side: str, quantity: int,
                           order_type: str = "MARKET", price: float | None = None,
@@ -265,7 +367,8 @@ class PaperTradingRunner(BaseRunner):
         # Call on_init
         self._strategy_instance.on_init(self._context)
         self._running = True
-        logger.info("Paper trading session %s started", self.session_id)
+        logger.info("Paper trading session %s started (timeframe=%s, tf_seconds=%d)",
+                     self.session_id, self._timeframe, self._tf_seconds)
 
     def pause(self):
         self._paused = True
