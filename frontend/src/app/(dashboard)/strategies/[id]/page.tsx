@@ -68,8 +68,14 @@ export default function EditStrategyPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showBacktestPanel, setShowBacktestPanel] = useState(false);
   const [isRunningBacktest, setIsRunningBacktest] = useState(false);
-  const [btStartDate, setBtStartDate] = useState("2025-01-01");
-  const [btEndDate, setBtEndDate] = useState("2025-12-31");
+  const [btStartDate, setBtStartDate] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [btEndDate, setBtEndDate] = useState(() => {
+    return new Date().toISOString().slice(0, 10);
+  });
   const [btCapital, setBtCapital] = useState("100000");
   const [btCommissionType, setBtCommissionType] = useState<"zerodha" | "flat">("zerodha");
   const [btFlatCommission, setBtFlatCommission] = useState("0");

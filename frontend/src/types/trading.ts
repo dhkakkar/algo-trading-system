@@ -2,6 +2,7 @@ export interface TradingSession {
   id: string;
   user_id: string;
   strategy_id: string;
+  strategy_name: string | null;
   strategy_version: number;
   mode: "paper" | "live";
   status: "stopped" | "running" | "paused" | "error";
@@ -20,6 +21,7 @@ export interface TradingSession {
 export interface TradingSessionListItem {
   id: string;
   strategy_id: string;
+  strategy_name: string | null;
   strategy_version: number;
   mode: "paper" | "live";
   status: "stopped" | "running" | "paused" | "error";

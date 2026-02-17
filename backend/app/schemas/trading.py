@@ -16,6 +16,7 @@ class TradingSessionResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     strategy_id: uuid.UUID
+    strategy_name: str | None = None
     strategy_version: int
     mode: str
     status: str
@@ -36,6 +37,7 @@ class TradingSessionResponse(BaseModel):
 class TradingSessionListResponse(BaseModel):
     id: uuid.UUID
     strategy_id: uuid.UUID
+    strategy_name: str | None = None
     strategy_version: int
     mode: str
     status: str

@@ -283,7 +283,7 @@ export default function PaperTradingDetailPage() {
             <StatusBadge status={session.status} />
           </div>
           <p className="text-muted-foreground text-sm mt-0.5">
-            Strategy: {session.strategy_id.slice(0, 8)}... v{session.strategy_version} &middot;{" "}
+            Strategy: {session.strategy_name || session.strategy_id.slice(0, 8)} v{session.strategy_version} &middot;{" "}
             {session.instruments.join(", ")} &middot; {session.timeframe} &middot;{" "}
             {formatCurrency(session.initial_capital)} capital
           </p>

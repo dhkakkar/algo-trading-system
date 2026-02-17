@@ -222,7 +222,7 @@ export default function LiveTradingPage() {
                       <td className="py-3 font-medium">
                         <Link href={`/live-trading/${session.id}`} className="block">
                           <span className="text-xs text-muted-foreground">
-                            {session.strategy_id.slice(0, 8)}...
+                            {session.strategy_name || session.strategy_id.slice(0, 8)}
                           </span>
                           <span className="ml-1 text-xs text-muted-foreground">
                             v{session.strategy_version}

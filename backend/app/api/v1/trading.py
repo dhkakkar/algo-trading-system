@@ -25,6 +25,20 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     sessions = await trading_service.get_sessions(db, current_user.id, mode)
+    # Attach strategy names
+    from app.models.strategy import Strategy
+    strategy_ids = list({s.strategy_id for s in sessions})
+    if strategy_ids:
+        result = await db.execute(
+            select(Strategy.id, Strategy.name).where(Strategy.id.in_(strategy_ids))
+        )
+        name_map = {row.id: row.name for row in result.all()}
+        responses = []
+        for s in sessions:
+            resp = TradingSessionListResponse.model_validate(s)
+            resp.strategy_name = name_map.get(s.strategy_id)
+            responses.append(resp)
+        return responses
     return sessions
 
 
@@ -52,7 +66,14 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ):
     session = await trading_service.get_session(db, session_id, current_user.id)
-    return session
+    from app.models.strategy import Strategy
+    result = await db.execute(
+        select(Strategy.name).where(Strategy.id == session.strategy_id)
+    )
+    strategy_name = result.scalar_one_or_none()
+    resp = TradingSessionResponse.model_validate(session)
+    resp.strategy_name = strategy_name
+    return resp
 
 
 @router.post("/sessions/{session_id}/start")
