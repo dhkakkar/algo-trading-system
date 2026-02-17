@@ -152,7 +152,7 @@ function calcCPR(candles: CandleData[]): CPRResult | null {
   const getDayKey = (c: CandleData): string =>
     isDaily ? (c.time as string) : String(Math.floor((c.time as number) / 86400));
 
-  const dayGroups: { firstTime: any; high: number; low: number; close: number }[] = [];
+  const dayGroups: { firstTime: any; lastTime: any; high: number; low: number; close: number }[] = [];
   const dayMap = new Map<string, number>();
 
   for (const c of candles) {
@@ -163,9 +163,10 @@ function calcCPR(candles: CandleData[]): CPRResult | null {
       g.high = Math.max(g.high, c.high);
       g.low = Math.min(g.low, c.low);
       g.close = c.close;
+      g.lastTime = c.time;
     } else {
       dayMap.set(key, dayGroups.length);
-      dayGroups.push({ firstTime: c.time, high: c.high, low: c.low, close: c.close });
+      dayGroups.push({ firstTime: c.time, lastTime: c.time, high: c.high, low: c.low, close: c.close });
     }
   }
 
@@ -184,14 +185,25 @@ function calcCPR(candles: CandleData[]): CPRResult | null {
     const r2 = pivot + (pH - pL);
     const s2 = pivot - (pH - pL);
 
-    const t = dayGroups[i].firstTime;
-    result.pivot.push({ time: t, value: pivot });
-    result.tc.push({ time: t, value: tc });
-    result.bc.push({ time: t, value: bc });
-    result.r1.push({ time: t, value: r1 });
-    result.r2.push({ time: t, value: r2 });
-    result.s1.push({ time: t, value: s1 });
-    result.s2.push({ time: t, value: s2 });
+    const tStart = dayGroups[i].firstTime;
+    const tEnd = dayGroups[i].lastTime;
+    // Add start and end points so the line spans the entire day
+    result.pivot.push({ time: tStart, value: pivot });
+    result.tc.push({ time: tStart, value: tc });
+    result.bc.push({ time: tStart, value: bc });
+    result.r1.push({ time: tStart, value: r1 });
+    result.r2.push({ time: tStart, value: r2 });
+    result.s1.push({ time: tStart, value: s1 });
+    result.s2.push({ time: tStart, value: s2 });
+    if (tEnd !== tStart) {
+      result.pivot.push({ time: tEnd, value: pivot });
+      result.tc.push({ time: tEnd, value: tc });
+      result.bc.push({ time: tEnd, value: bc });
+      result.r1.push({ time: tEnd, value: r1 });
+      result.r2.push({ time: tEnd, value: r2 });
+      result.s1.push({ time: tEnd, value: s1 });
+      result.s2.push({ time: tEnd, value: s2 });
+    }
   }
 
   return result.pivot.length > 0 ? result : null;
@@ -336,7 +348,6 @@ export function applyIndicators(
           color,
           lineWidth: 1,
           lineStyle: dash ? 2 : 1,
-          lineType: 1, // WithSteps — holds level flat until next day
           priceLineVisible: false,
           lastValueVisible: false,
         });

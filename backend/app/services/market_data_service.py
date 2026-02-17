@@ -36,6 +36,19 @@ async def get_instrument(db: AsyncSession, instrument_token: int) -> Instrument:
     return instrument
 
 
+async def find_instrument(
+    db: AsyncSession, symbol: str, exchange: str
+) -> Instrument | None:
+    """Look up an instrument by trading symbol and exchange."""
+    result = await db.execute(
+        select(Instrument).where(
+            Instrument.tradingsymbol == symbol.upper(),
+            Instrument.exchange == exchange.upper(),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_ohlcv(
     db: AsyncSession,
     symbol: str,
