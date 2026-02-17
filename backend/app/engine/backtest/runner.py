@@ -90,6 +90,20 @@ class BacktestContext(TradingContext):
     # Order management
     # ------------------------------------------------------------------
 
+    def _is_time_locked(self) -> bool:
+        """Check if the current bar falls within any time lock window."""
+        locks = getattr(self._runner, "_time_locks", [])
+        if not locks:
+            return False
+        ts = self._runner.data_handler.current_timestamp
+        if not ts or not hasattr(ts, "hour"):
+            return False
+        bar_time = (ts.hour, ts.minute)
+        for (sh, sm), (eh, em) in locks:
+            if (sh, sm) <= bar_time < (eh, em):
+                return True
+        return False
+
     def buy(
         self,
         symbol: str,
@@ -108,6 +122,11 @@ class BacktestContext(TradingContext):
 
         Returns a unique order-id string.
         """
+        if self._is_time_locked():
+            ts = self._runner.data_handler.current_timestamp
+            self._runner._add_log("WARNING", f"BUY {symbol} blocked — time lock active at {ts.strftime('%H:%M') if ts else '?'}", "runner")
+            return ""
+
         order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
 
         order = OrderEvent(
@@ -158,6 +177,11 @@ class BacktestContext(TradingContext):
 
         Returns a unique order-id string.
         """
+        if self._is_time_locked():
+            ts = self._runner.data_handler.current_timestamp
+            self._runner._add_log("WARNING", f"SELL {symbol} blocked — time lock active at {ts.strftime('%H:%M') if ts else '?'}", "runner")
+            return ""
+
         order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
 
         order = OrderEvent(
@@ -539,10 +563,39 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         progress_interval = max(1, total_bars // 100)  # report ~100 times
 
-        # Intraday EOD square-off: close all positions at 15:10 IST
+        # Intraday EOD square-off config
         timeframe = self._config.get("timeframe", "1d")
         is_intraday_tf = timeframe not in ("1d", "1D", "day", "1w", "1W", "week")
         _last_eod_date = None  # track which day we already squared off
+
+        # Parse EOD square-off time from parameters (default 15:10)
+        eod_time_str = params.get("eod_square_off_time", "")
+        if eod_time_str and is_intraday_tf:
+            try:
+                h, m = map(int, eod_time_str.split(":"))
+                eod_time = (h, m)
+            except (ValueError, AttributeError):
+                eod_time = (15, 10)
+            self._add_log("INFO", f"EOD square-off enabled at {eod_time_str}", "runner")
+        elif is_intraday_tf:
+            eod_time = None  # disabled when empty string
+        else:
+            eod_time = None
+
+        # Parse time locks from parameters
+        raw_time_locks = params.get("time_locks", [])
+        time_locks: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for lock in raw_time_locks:
+            try:
+                sh, sm = map(int, lock["start"].split(":"))
+                eh, em = map(int, lock["end"].split(":"))
+                time_locks.append(((sh, sm), (eh, em)))
+            except (ValueError, KeyError, AttributeError):
+                continue
+        if time_locks and is_intraday_tf:
+            locks_str = ", ".join(f"{l['start']}-{l['end']}" for l in raw_time_locks if "start" in l and "end" in l)
+            self._add_log("INFO", f"Time locks active: {locks_str}", "runner")
+        self._time_locks = time_locks if is_intraday_tf else []
 
         for bar_index, (timestamp, bar_data) in enumerate(self.data_handler):
 
@@ -550,11 +603,11 @@ class BacktestRunner(BaseRunner):
             #     (orders placed during previous on_data get filled now)
             self._process_pending_orders(bar_index)
 
-            # 5a-ii. Intraday EOD square-off at 15:10
-            if is_intraday_tf and hasattr(timestamp, "hour"):
+            # 5a-ii. Intraday EOD square-off
+            if eod_time and hasattr(timestamp, "hour"):
                 bar_time = (timestamp.hour, timestamp.minute)
                 bar_date = timestamp.date() if hasattr(timestamp, "date") else None
-                if bar_time >= (15, 10) and bar_date != _last_eod_date:
+                if bar_time >= eod_time and bar_date != _last_eod_date:
                     if self.portfolio.positions:
                         prices = self.data_handler.get_current_prices()
                         closed = self.portfolio.close_all_positions(prices, timestamp)
@@ -564,13 +617,16 @@ class BacktestRunner(BaseRunner):
                             pnl = pos.get("pnl", 0)
                             self._add_log(
                                 "INFO",
-                                f"EOD square-off: closed {sym} at 15:10 — P&L: {pnl:.2f}",
+                                f"EOD square-off: closed {sym} at {eod_time_str or '15:10'} — P&L: {pnl:.2f}",
                                 "runner",
                             )
-                        # Cancel any pending orders
-                        if self._pending_orders:
-                            self._add_log("INFO", f"EOD: cancelled {len(self._pending_orders)} pending order(s)", "runner")
-                            self._pending_orders.clear()
+                    else:
+                        if bar_date != _last_eod_date:
+                            _last_eod_date = bar_date
+                    # Cancel any pending orders
+                    if self._pending_orders:
+                        self._add_log("INFO", f"EOD: cancelled {len(self._pending_orders)} pending order(s)", "runner")
+                        self._pending_orders.clear()
 
             # 5b. Call strategy.on_data()
             try:

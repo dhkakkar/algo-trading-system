@@ -12,6 +12,10 @@ import {
   FlaskConical,
   Play,
   Zap,
+  Plus,
+  X,
+  Clock,
+  Lock,
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -80,6 +84,9 @@ export default function EditStrategyPage() {
   const [btCommissionType, setBtCommissionType] = useState<"zerodha" | "flat">("zerodha");
   const [btFlatCommission, setBtFlatCommission] = useState("0");
   const [btSlippage, setBtSlippage] = useState("0.05");
+  const [btEodSquareOff, setBtEodSquareOff] = useState("15:10");
+  const [btEodEnabled, setBtEodEnabled] = useState(true);
+  const [btTimeLocks, setBtTimeLocks] = useState<{ start: string; end: string }[]>([]);
 
   // Trading session state
   const [showTradingPanel, setShowTradingPanel] = useState<"paper" | "live" | null>(null);
@@ -223,6 +230,8 @@ export default function EditStrategyPage() {
           commission_type: btCommissionType,
           flat_commission: parseFloat(btFlatCommission) || 0,
           slippage_percent: parseFloat(btSlippage) || 0,
+          eod_square_off_time: btEodEnabled ? btEodSquareOff : "",
+          time_locks: btTimeLocks.filter((l) => l.start && l.end),
         },
       });
 
@@ -542,6 +551,73 @@ export default function EditStrategyPage() {
                 min="0"
                 step="0.01"
               />
+            </div>
+          </div>
+          {/* EOD Square-off & Time Locks row */}
+          <div className="flex items-start gap-3 pl-9 flex-wrap">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="bt-eod-enabled"
+                checked={btEodEnabled}
+                onChange={(e) => setBtEodEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <Label htmlFor="bt-eod-enabled" className="text-sm whitespace-nowrap flex items-center gap-1">
+                <Clock className="h-3.5 w-3.5" /> EOD Square-off
+              </Label>
+              {btEodEnabled && (
+                <Input
+                  type="time"
+                  value={btEodSquareOff}
+                  onChange={(e) => setBtEodSquareOff(e.target.value)}
+                  className="w-28 h-8 text-sm"
+                />
+              )}
+            </div>
+            <div className="border-l border-border pl-3 flex items-start gap-2">
+              <Label className="text-sm whitespace-nowrap flex items-center gap-1 pt-1">
+                <Lock className="h-3.5 w-3.5" /> Time Locks
+              </Label>
+              <div className="flex flex-col gap-1.5">
+                {btTimeLocks.map((lock, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      type="time"
+                      value={lock.start}
+                      onChange={(e) => {
+                        const updated = [...btTimeLocks];
+                        updated[i] = { ...updated[i], start: e.target.value };
+                        setBtTimeLocks(updated);
+                      }}
+                      className="w-28 h-7 text-sm"
+                    />
+                    <span className="text-xs text-muted-foreground">to</span>
+                    <Input
+                      type="time"
+                      value={lock.end}
+                      onChange={(e) => {
+                        const updated = [...btTimeLocks];
+                        updated[i] = { ...updated[i], end: e.target.value };
+                        setBtTimeLocks(updated);
+                      }}
+                      className="w-28 h-7 text-sm"
+                    />
+                    <button
+                      onClick={() => setBtTimeLocks(btTimeLocks.filter((_, j) => j !== i))}
+                      className="text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setBtTimeLocks([...btTimeLocks, { start: "09:15", end: "09:30" }])}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Plus className="h-3 w-3" /> Add time lock
+                </button>
+              </div>
             </div>
           </div>
         </div>
