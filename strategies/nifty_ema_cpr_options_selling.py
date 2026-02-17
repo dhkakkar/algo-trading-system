@@ -47,22 +47,23 @@ class NiftyEMACPRStrategy(Strategy):
     (PE on bullish signal, CE on bearish signal) targeting delta ~0.4.
 
     Signal logic runs on the underlying (NIFTY 50); execution is on NFO
-    options.  Stop-loss is tracked on the underlying price.
+    options.  SL, TSL and TP are tracked on per-lot P&L in INR.
 
     Parameters:
-        symbol          — Underlying symbol (default: "NIFTY 50")
-        exchange        — Underlying exchange (default: "NSE")
-        quantity        — Number of lots (default: 1)
-        target_delta    — Option |delta| to target (default: 0.4)
-        ema_fast        — Fast EMA period (default: 20)
-        ema_slow        — Slow EMA period (default: 60)
-        initial_sl      — Initial stop loss in underlying points (default: 2500)
-        tsl_activation  — TSL activation profit threshold (default: 2000)
-        tsl_lock_pct    — TSL lock-in percentage (default: 50)
-        tsl_step_size   — TSL step size (default: 200)
-        swing_bars      — Bars for trigger invalidation (default: 3)
-        cutoff_hour     — Time cutoff hour IST (default: 15)
-        cutoff_minute   — Time cutoff minute (default: 10)
+        symbol          -- Underlying symbol (default: "NIFTY 50")
+        exchange        -- Underlying exchange (default: "NSE")
+        quantity        -- Number of lots (default: 1)
+        target_delta    -- Option |delta| to target (default: 0.4)
+        ema_fast        -- Fast EMA period (default: 20)
+        ema_slow        -- Slow EMA period (default: 60)
+        tp_per_lot      -- Take profit per lot in INR (default: 2000)
+        sl_per_lot      -- Initial stop loss per lot in INR (default: 2000)
+        tsl_activation  -- TSL activation profit per lot in INR (default: 1500)
+        tsl_lock_pct    -- TSL lock-in percentage (default: 50)
+        tsl_step_per_lot -- TSL step size per lot in INR (default: 200)
+        swing_bars      -- Bars for trigger invalidation (default: 3)
+        cutoff_hour     -- Time cutoff hour IST (default: 15)
+        cutoff_minute   -- Time cutoff minute (default: 10)
     """
 
     def on_init(self, ctx):
@@ -76,11 +77,12 @@ class NiftyEMACPRStrategy(Strategy):
         self.ema_fast = ctx.get_param("ema_fast", 20)
         self.ema_slow = ctx.get_param("ema_slow", 60)
 
-        # --- Stop-loss & trailing (underlying points) ---
-        self.initial_sl = ctx.get_param("initial_sl", 2500)
-        self.tsl_activation = ctx.get_param("tsl_activation", 2000)
+        # --- P&L-based exits (INR per lot) ---
+        self.tp_per_lot = ctx.get_param("tp_per_lot", 2000)
+        self.sl_per_lot = ctx.get_param("sl_per_lot", 2000)
+        self.tsl_activation = ctx.get_param("tsl_activation", 1500)
         self.tsl_lock_pct = ctx.get_param("tsl_lock_pct", 50)
-        self.tsl_step_size = ctx.get_param("tsl_step_size", 200)
+        self.tsl_step_per_lot = ctx.get_param("tsl_step_per_lot", 200)
 
         # --- Trigger ---
         self.swing_bars = ctx.get_param("swing_bars", 3)
@@ -98,14 +100,14 @@ class NiftyEMACPRStrategy(Strategy):
         self.recent_highs = []
         self.recent_lows = []
 
-        # --- Position state (underlying-level) ---
+        # --- Position state ---
         self.in_long = False
         self.in_short = False
-        self.entry_price = None
-        self.current_sl = None
-        self.peak_profit = 0.0
+        self.entry_premium = None   # option premium at sell
+        self.peak_pnl_per_lot = 0.0
         self.tsl_step = 0
         self.tsl_active = False
+        self.sl_level_per_lot = None  # current SL level in INR per lot (negative = loss)
 
         # --- Options position tracking ---
         self.held_option = None
@@ -125,10 +127,11 @@ class NiftyEMACPRStrategy(Strategy):
             "EMA+CPR Options Selling init: underlying=" + self.symbol
             + " lots=" + str(self.num_lots)
             + " target_delta=" + str(self.target_delta)
-            + " SL=" + str(self.initial_sl)
+            + " TP/lot=" + str(self.tp_per_lot)
+            + " SL/lot=" + str(self.sl_per_lot)
         )
 
-    # ── Option selection ──────────────────────────────────────────
+    # -- Option selection --------------------------------------------------
 
     def find_option_by_delta(self, ctx, spot, option_type, closes_list):
         """Find the option with |delta| closest to target_delta."""
@@ -179,7 +182,7 @@ class NiftyEMACPRStrategy(Strategy):
             )
         return best
 
-    # ── Exit held option helper ───────────────────────────────────
+    # -- Exit held option helper -------------------------------------------
 
     def exit_held_option(self, ctx, reason):
         """Buy back the sold option to close the position."""
@@ -189,7 +192,21 @@ class NiftyEMACPRStrategy(Strategy):
             ctx.log("EXIT (" + reason + ") | buyback " + self.held_option
                     + " x" + str(qty))
 
-    # ── Main bar handler ─────────────────────────────────────────
+    # -- P&L helper --------------------------------------------------------
+
+    def calc_pnl_per_lot(self, ctx):
+        """Return current P&L per lot in INR (positive = profit for seller).
+
+        For options selling: profit = (entry_premium - current_premium) * lot_size
+        """
+        if self.entry_premium is None or self.held_option is None:
+            return 0.0
+        current_premium = ctx.get_option_price(self.held_option)
+        if current_premium is None:
+            return 0.0
+        return (self.entry_premium - current_premium) * self.held_lot_size
+
+    # -- Main bar handler --------------------------------------------------
 
     def on_data(self, ctx):
         lookback = max(self.ema_slow + 10, 200)
@@ -217,7 +234,7 @@ class NiftyEMACPRStrategy(Strategy):
         bar_min = timestamp.minute if hasattr(timestamp, "minute") else 0
         bar_date = timestamp.date() if hasattr(timestamp, "date") else None
 
-        # ── New day reset ────────────────────────────────────────
+        # -- New day reset -------------------------------------------------
         if bar_date is not None and bar_date != self.last_date:
             self.calc_prev_day_hlc(data, bar_date)
             self.bullish_trigger = False
@@ -234,12 +251,12 @@ class NiftyEMACPRStrategy(Strategy):
         if self.prev_day_high is None:
             return
 
-        # ── CPR ──────────────────────────────────────────────────
+        # -- CPR -----------------------------------------------------------
         pivot = (self.prev_day_high + self.prev_day_low + self.prev_day_close) / 3.0
         bc = (self.prev_day_high + self.prev_day_low) / 2.0
         tc = (2.0 * pivot) - bc
 
-        # ── EMAs ─────────────────────────────────────────────────
+        # -- EMAs ----------------------------------------------------------
         ema20 = ctx.ema(close, self.ema_fast)
         ema60 = ctx.ema(close, self.ema_slow)
         cur_ema20 = ema20.iloc[-1]
@@ -250,7 +267,7 @@ class NiftyEMACPRStrategy(Strategy):
             or (bar_hour == self.cutoff_hour and bar_min < self.cutoff_minute)
         )
 
-        # ── Trigger conditions ───────────────────────────────────
+        # -- Trigger conditions --------------------------------------------
         bull_cond = cur_close > cur_ema20 and cur_close > cur_ema60 and cur_close > tc
         bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < bc
 
@@ -259,7 +276,7 @@ class NiftyEMACPRStrategy(Strategy):
             self.recent_highs.append(cur_high)
             self.recent_lows.append(cur_low)
 
-        # ── New bullish trigger ──────────────────────────────────
+        # -- New bullish trigger -------------------------------------------
         if (bull_cond and not self.bullish_trigger
                 and not self.in_long and not self.block_long and before_cutoff):
             self.bullish_trigger = True
@@ -273,7 +290,7 @@ class NiftyEMACPRStrategy(Strategy):
                 + " TC=" + str(round(tc, 2))
             )
 
-        # ── New bearish trigger ──────────────────────────────────
+        # -- New bearish trigger -------------------------------------------
         if (bear_cond and not self.bearish_trigger
                 and not self.in_short and not self.block_short and before_cutoff):
             self.bearish_trigger = True
@@ -287,7 +304,7 @@ class NiftyEMACPRStrategy(Strategy):
                 + " BC=" + str(round(bc, 2))
             )
 
-        # ── Trigger invalidation (swing) ─────────────────────────
+        # -- Trigger invalidation (swing) ----------------------------------
         min_bars_for_swing = self.swing_bars * 2 + 1
 
         if self.bullish_trigger and self.bars_since_trigger >= min_bars_for_swing:
@@ -302,7 +319,7 @@ class NiftyEMACPRStrategy(Strategy):
                 self.trigger_low = None
                 ctx.log("Bear trigger INVALIDATED (swing low)")
 
-        # ── Long entry: breakout above trigger high -> SELL PE ────
+        # -- Long entry: breakout above trigger high -> SELL PE ------------
         if (self.bullish_trigger and not self.in_long
                 and not self.block_long and before_cutoff
                 and cur_close > self.trigger_high):
@@ -312,21 +329,22 @@ class NiftyEMACPRStrategy(Strategy):
                 self.held_lot_size = opt.get("lot_size", 25)
                 ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
                 self.held_option = opt["tradingsymbol"]
-                self.entry_price = cur_close
-                self.current_sl = cur_close - self.initial_sl
-                self.peak_profit = 0.0
+                self.entry_premium = None  # will be set on fill
+                self.peak_pnl_per_lot = 0.0
                 self.tsl_step = 0
                 self.tsl_active = False
+                self.sl_level_per_lot = 0.0 - self.sl_per_lot
                 self.in_long = True
                 self.bullish_trigger = False
                 self.trigger_high = None
                 ctx.log(
                     "LONG ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
                     + str(round(cur_close, 2))
-                    + " | SL=" + str(round(self.current_sl, 2))
+                    + " | SL/lot=" + str(self.sl_per_lot) + " INR"
+                    + " | TP/lot=" + str(self.tp_per_lot) + " INR"
                 )
 
-        # ── Short entry: breakdown below trigger low -> SELL CE ───
+        # -- Short entry: breakdown below trigger low -> SELL CE -----------
         if (self.bearish_trigger and not self.in_short
                 and not self.block_short and before_cutoff
                 and cur_close < self.trigger_low):
@@ -336,107 +354,98 @@ class NiftyEMACPRStrategy(Strategy):
                 self.held_lot_size = opt.get("lot_size", 25)
                 ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
                 self.held_option = opt["tradingsymbol"]
-                self.entry_price = cur_close
-                self.current_sl = cur_close + self.initial_sl
-                self.peak_profit = 0.0
+                self.entry_premium = None  # will be set on fill
+                self.peak_pnl_per_lot = 0.0
                 self.tsl_step = 0
                 self.tsl_active = False
+                self.sl_level_per_lot = 0.0 - self.sl_per_lot
                 self.in_short = True
                 self.bearish_trigger = False
                 self.trigger_low = None
                 ctx.log(
                     "SHORT ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
                     + str(round(cur_close, 2))
-                    + " | SL=" + str(round(self.current_sl, 2))
+                    + " | SL/lot=" + str(self.sl_per_lot) + " INR"
+                    + " | TP/lot=" + str(self.tp_per_lot) + " INR"
                 )
 
-        # ── Stepwise trailing SL — LONG ─────────────────────────
-        if self.in_long and self.entry_price is not None:
-            unrealized = cur_close - self.entry_price
-            if unrealized > self.peak_profit:
-                self.peak_profit = unrealized
+        # -- P&L-based exits (TP / SL / TSL) ------------------------------
+        if (self.in_long or self.in_short) and self.entry_premium is not None:
+            pnl_per_lot = self.calc_pnl_per_lot(ctx)
 
-            if not self.tsl_active and self.peak_profit >= self.tsl_activation:
-                self.tsl_active = True
-                self.tsl_step = 1
-                lock = self.peak_profit * (self.tsl_lock_pct / 100.0)
-                self.current_sl = self.entry_price + lock
-                ctx.log("TSL ON (Long) step=1 | SL=" + str(round(self.current_sl, 2)))
-
-            if self.tsl_active and self.peak_profit > self.tsl_activation:
-                new_step = 1 + int(
-                    (self.peak_profit - self.tsl_activation) / self.tsl_step_size
-                )
-                if new_step > self.tsl_step:
-                    self.tsl_step = new_step
-                    lock = self.peak_profit * (self.tsl_lock_pct / 100.0)
-                    self.current_sl = self.entry_price + lock
-                    ctx.log("TSL step=" + str(self.tsl_step)
-                            + " | SL=" + str(round(self.current_sl, 2)))
-
-            if cur_close <= self.current_sl:
-                reason = "TSL" if self.tsl_active else "Initial SL"
-                self.exit_held_option(ctx, "LONG " + reason)
-                ctx.log("LONG EXIT (" + reason + ") @ underlying="
-                        + str(round(cur_close, 2)))
-                if self.tsl_active:
+            # Take Profit
+            if pnl_per_lot >= self.tp_per_lot:
+                direction = "LONG" if self.in_long else "SHORT"
+                self.exit_held_option(ctx, direction + " TP")
+                ctx.log(direction + " EXIT (TP) | P&L/lot=" + str(round(pnl_per_lot, 2)) + " INR")
+                if self.in_long:
                     self.block_long = True
-                self.reset_position()
-
-        # ── Stepwise trailing SL — SHORT ─────────────────────────
-        if self.in_short and self.entry_price is not None:
-            unrealized = self.entry_price - cur_close
-            if unrealized > self.peak_profit:
-                self.peak_profit = unrealized
-
-            if not self.tsl_active and self.peak_profit >= self.tsl_activation:
-                self.tsl_active = True
-                self.tsl_step = 1
-                lock = self.peak_profit * (self.tsl_lock_pct / 100.0)
-                self.current_sl = self.entry_price - lock
-                ctx.log("TSL ON (Short) step=1 | SL=" + str(round(self.current_sl, 2)))
-
-            if self.tsl_active and self.peak_profit > self.tsl_activation:
-                new_step = 1 + int(
-                    (self.peak_profit - self.tsl_activation) / self.tsl_step_size
-                )
-                if new_step > self.tsl_step:
-                    self.tsl_step = new_step
-                    lock = self.peak_profit * (self.tsl_lock_pct / 100.0)
-                    self.current_sl = self.entry_price - lock
-                    ctx.log("TSL step=" + str(self.tsl_step)
-                            + " | SL=" + str(round(self.current_sl, 2)))
-
-            if cur_close >= self.current_sl:
-                reason = "TSL" if self.tsl_active else "Initial SL"
-                self.exit_held_option(ctx, "SHORT " + reason)
-                ctx.log("SHORT EXIT (" + reason + ") @ underlying="
-                        + str(round(cur_close, 2)))
-                if self.tsl_active:
+                else:
                     self.block_short = True
                 self.reset_position()
+            else:
+                # Track peak profit
+                if pnl_per_lot > self.peak_pnl_per_lot:
+                    self.peak_pnl_per_lot = pnl_per_lot
 
-        # ── Time cutoff — 3:10 PM IST ───────────────────────────
+                # TSL activation
+                if not self.tsl_active and self.peak_pnl_per_lot >= self.tsl_activation:
+                    self.tsl_active = True
+                    self.tsl_step = 1
+                    lock = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
+                    self.sl_level_per_lot = lock
+                    ctx.log("TSL ON step=1 | peak=" + str(round(self.peak_pnl_per_lot, 2))
+                            + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)) + " INR")
+
+                # TSL stepping
+                if self.tsl_active and self.peak_pnl_per_lot > self.tsl_activation:
+                    new_step = 1 + int(
+                        (self.peak_pnl_per_lot - self.tsl_activation) / self.tsl_step_per_lot
+                    )
+                    if new_step > self.tsl_step:
+                        self.tsl_step = new_step
+                        lock = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
+                        self.sl_level_per_lot = lock
+                        ctx.log("TSL step=" + str(self.tsl_step)
+                                + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)) + " INR")
+
+                # SL check (pnl dropped below SL level)
+                if pnl_per_lot <= self.sl_level_per_lot:
+                    direction = "LONG" if self.in_long else "SHORT"
+                    reason = "TSL" if self.tsl_active else "Initial SL"
+                    self.exit_held_option(ctx, direction + " " + reason)
+                    ctx.log(direction + " EXIT (" + reason + ") | P&L/lot="
+                            + str(round(pnl_per_lot, 2)) + " INR")
+                    if self.tsl_active:
+                        if self.in_long:
+                            self.block_long = True
+                        else:
+                            self.block_short = True
+                    self.reset_position()
+
+        # -- Time cutoff -- 3:10 PM IST ------------------------------------
         if not before_cutoff:
             if self.in_long:
+                pnl = self.calc_pnl_per_lot(ctx)
                 self.exit_held_option(ctx, "Cutoff 3:10 PM")
-                ctx.log("LONG EXIT (Cutoff) @ " + str(round(cur_close, 2)))
+                ctx.log("LONG EXIT (Cutoff) | P&L/lot=" + str(round(pnl, 2)) + " INR")
                 self.reset_position()
 
             if self.in_short:
+                pnl = self.calc_pnl_per_lot(ctx)
                 self.exit_held_option(ctx, "Cutoff 3:10 PM")
-                ctx.log("SHORT EXIT (Cutoff) @ " + str(round(cur_close, 2)))
+                ctx.log("SHORT EXIT (Cutoff) | P&L/lot=" + str(round(pnl, 2)) + " INR")
                 self.reset_position()
 
-    # ── Helpers ───────────────────────────────────────────────────
+    # -- Helpers -----------------------------------------------------------
 
     def reset_position(self):
         """Clear all position-related state."""
         self.in_long = False
         self.in_short = False
-        self.entry_price = None
-        self.current_sl = None
-        self.peak_profit = 0.0
+        self.entry_premium = None
+        self.peak_pnl_per_lot = 0.0
+        self.sl_level_per_lot = None
         self.tsl_step = 0
         self.tsl_active = False
         self.held_option = None
@@ -499,10 +508,16 @@ class NiftyEMACPRStrategy(Strategy):
         return False
 
     def on_order_fill(self, ctx, order):
+        """Record entry premium when the sell order fills."""
         ctx.log(
             "FILLED: " + order.side + " " + order.symbol
             + " x" + str(order.quantity) + " @ " + str(order.fill_price)
         )
+        # When the sell (entry) fills, store the premium
+        if order.side == "SELL" and self.entry_premium is None:
+            self.entry_premium = order.fill_price
+            ctx.log("Entry premium recorded: " + str(round(order.fill_price, 2))
+                    + " | lot_size=" + str(self.held_lot_size))
 
     def on_stop(self, ctx):
         ctx.log("EMA+CPR Options Selling Strategy stopped")

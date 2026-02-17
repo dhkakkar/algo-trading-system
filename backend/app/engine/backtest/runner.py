@@ -146,6 +146,23 @@ class BacktestContext(TradingContext):
                 bar_date = _to_ist(ts).date()
         return oh.get_option_chain(expiry=expiry, bar_date=bar_date)
 
+    def get_option_price(self, tradingsymbol: str) -> float | None:
+        """Return the current close price of an option from its OHLCV data.
+
+        Returns ``None`` if the options handler has no data for the symbol
+        at the current timestamp.
+        """
+        oh = self._runner.options_handler
+        if not oh:
+            return None
+        ts = self._runner.data_handler.current_timestamp
+        if not ts:
+            return None
+        bar = oh.get_option_bar(tradingsymbol, ts)
+        if bar and "close" in bar:
+            return float(bar["close"])
+        return None
+
     # ------------------------------------------------------------------
     # Order management
     # ------------------------------------------------------------------
