@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+from app.core.timezone import IST
 from app.engine.common.base_runner import BaseRunner
 from app.engine.common.events import OrderEvent
 from app.engine.live.risk_manager import RiskManager
@@ -20,8 +21,6 @@ from app.schemas.notifications import NotificationEventType
 from app.services.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 
 class LiveTradingContext(TradingContext):

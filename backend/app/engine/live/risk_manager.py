@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
+from app.core.timezone import IST
 from app.integrations.kite_connect.constants import (
     MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
     MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE,
@@ -42,11 +43,11 @@ class RiskManager:
         """Reset daily counters."""
         self._daily_pnl = 0.0
         self._order_timestamps.clear()
-        self._daily_date = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+        self._daily_date = datetime.now(IST).strftime("%Y-%m-%d")
 
     def update_pnl(self, realized_pnl: float):
         """Update daily P&L tracking."""
-        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+        today = datetime.now(IST).strftime("%Y-%m-%d")
         if today != self._daily_date:
             self.reset_daily()
         self._daily_pnl += realized_pnl
@@ -68,8 +69,7 @@ class RiskManager:
 
         Returns (allowed, rejection_reason).
         """
-        ist = timezone(timedelta(hours=5, minutes=30))
-        now_ist = datetime.now(ist)
+        now_ist = datetime.now(IST)
         today = now_ist.strftime("%Y-%m-%d")
 
         if today != self._daily_date:

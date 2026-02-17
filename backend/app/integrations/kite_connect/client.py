@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography.fernet import Fernet
 from app.config import get_settings
+from app.core.timezone import IST
 from app.models.broker_connection import BrokerConnection
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,7 @@ class KiteClientManager:
     def _calc_token_expiry() -> datetime:
         """Kite tokens expire at 6:00 AM IST (00:30 UTC) the next day."""
         now = datetime.now(timezone.utc)
-        ist = timezone(timedelta(hours=5, minutes=30))
-        now_ist = now.astimezone(ist)
+        now_ist = now.astimezone(IST)
         # Next day at 6:00 AM IST
         expiry_ist = now_ist.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
         return expiry_ist.astimezone(timezone.utc)

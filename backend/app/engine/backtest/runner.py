@@ -18,11 +18,10 @@ from __future__ import annotations
 import logging
 import traceback
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-# Indian Standard Time (UTC+5:30)
-IST = timezone(timedelta(hours=5, minutes=30))
+from app.core.timezone import IST
 
 from app.engine.backtest.data_handler import HistoricalDataHandler
 from app.engine.backtest.execution_handler import SimulatedExecutionHandler
@@ -135,7 +134,7 @@ class BacktestContext(TradingContext):
         order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
 
         order = OrderEvent(
-            timestamp=self._runner.data_handler.current_timestamp or datetime.now(),
+            timestamp=self._runner.data_handler.current_timestamp or datetime.now(timezone.utc),
             symbol=symbol,
             exchange=exchange,
             side="BUY",
@@ -190,7 +189,7 @@ class BacktestContext(TradingContext):
         order_id = f"BT-{self._runner.backtest_id[:8]}-{len(self._runner._order_queue)}"
 
         order = OrderEvent(
-            timestamp=self._runner.data_handler.current_timestamp or datetime.now(),
+            timestamp=self._runner.data_handler.current_timestamp or datetime.now(timezone.utc),
             symbol=symbol,
             exchange=exchange,
             side="SELL",
@@ -404,7 +403,7 @@ class BacktestRunner(BaseRunner):
 
     def _add_log(self, level: str, message: str, source: str = "system"):
         """Append a structured log entry."""
-        ts = self.data_handler.current_timestamp if self.data_handler else datetime.now()
+        ts = self.data_handler.current_timestamp if self.data_handler else datetime.now(timezone.utc)
         self._logs.append({
             "level": level,
             "source": source,
@@ -666,7 +665,7 @@ class BacktestRunner(BaseRunner):
         # 6. Close all open positions at the end
         # ----------------------------------------------------------
         final_prices = self.data_handler.get_current_prices()
-        final_ts = self.data_handler.current_timestamp or datetime.now()
+        final_ts = self.data_handler.current_timestamp or datetime.now(timezone.utc)
         closed = self.portfolio.close_all_positions(final_prices, final_ts)
         if closed:
             for pos in closed:
@@ -692,8 +691,8 @@ class BacktestRunner(BaseRunner):
         # ----------------------------------------------------------
         # 8. Calculate metrics
         # ----------------------------------------------------------
-        start_date = self._config.get("start_date", datetime.now())
-        end_date = self._config.get("end_date", datetime.now())
+        start_date = self._config.get("start_date", datetime.now(timezone.utc))
+        end_date = self._config.get("end_date", datetime.now(timezone.utc))
 
         metrics = calculate_all_metrics(
             equity_curve=self.portfolio.equity_curve,
@@ -1019,7 +1018,7 @@ class _ListLogHandler(logging.Handler):
             level_map = {logging.DEBUG: "INFO", logging.INFO: "INFO", logging.WARNING: "WARNING", logging.ERROR: "ERROR"}
             ts = (self._data_handler.current_timestamp
                   if self._data_handler and self._data_handler.current_timestamp
-                  else datetime.now())
+                  else datetime.now(timezone.utc))
             self._logs.append({
                 "level": level_map.get(record.levelno, "INFO"),
                 "source": "strategy",

@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+from app.core.timezone import IST
 from app.engine.common.base_runner import BaseRunner
 from app.engine.common.events import OrderEvent, FillEvent
 from app.engine.paper.simulated_broker import SimulatedBroker
@@ -22,8 +23,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Bar-aggregation helpers
 # ---------------------------------------------------------------------------
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 TIMEFRAME_SECONDS: dict[str, int] = {
     "1m": 60, "3m": 180, "5m": 300, "10m": 600,
