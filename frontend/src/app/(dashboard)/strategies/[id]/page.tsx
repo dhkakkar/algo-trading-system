@@ -87,9 +87,6 @@ export default function EditStrategyPage() {
   const [btEodSquareOff, setBtEodSquareOff] = useState("15:10");
   const [btEodEnabled, setBtEodEnabled] = useState(true);
   const [btTimeLocks, setBtTimeLocks] = useState<{ start: string; end: string }[]>([]);
-  const [btOptionsMode, setBtOptionsMode] = useState(false);
-  const [btOptionsExpiryType, setBtOptionsExpiryType] = useState<"weekly" | "monthly">("weekly");
-  const [btOptionsStrikeOffset, setBtOptionsStrikeOffset] = useState("0");
 
   // Trading session state
   const [showTradingPanel, setShowTradingPanel] = useState<"paper" | "live" | null>(null);
@@ -98,9 +95,6 @@ export default function EditStrategyPage() {
   const [tradeEodEnabled, setTradeEodEnabled] = useState(true);
   const [tradeEodTime, setTradeEodTime] = useState("15:10");
   const [tradeTimeLocks, setTradeTimeLocks] = useState<{ start: string; end: string }[]>([]);
-  const [tradeOptionsMode, setTradeOptionsMode] = useState(false);
-  const [tradeOptionsExpiryType, setTradeOptionsExpiryType] = useState<"weekly" | "monthly">("weekly");
-  const [tradeOptionsStrikeOffset, setTradeOptionsStrikeOffset] = useState("0");
   const [validationResult, setValidationResult] = useState<{
     valid: boolean;
     error: string | null;
@@ -241,9 +235,6 @@ export default function EditStrategyPage() {
           slippage_percent: parseFloat(btSlippage) || 0,
           eod_square_off_time: btEodEnabled ? btEodSquareOff : "",
           time_locks: btTimeLocks.filter((l) => l.start && l.end),
-          options_mode: btOptionsMode,
-          options_expiry_type: btOptionsExpiryType,
-          options_strike_offset: parseInt(btOptionsStrikeOffset) || 0,
         },
       });
 
@@ -283,9 +274,6 @@ export default function EditStrategyPage() {
         parameters: {
           eod_square_off_time: tradeEodEnabled ? tradeEodTime : "",
           time_locks: tradeTimeLocks.filter((l) => l.start && l.end),
-          options_mode: tradeOptionsMode,
-          options_expiry_type: tradeOptionsExpiryType,
-          options_strike_offset: parseInt(tradeOptionsStrikeOffset) || 0,
         },
       });
 
@@ -639,52 +627,6 @@ export default function EditStrategyPage() {
               </div>
             </div>
           </div>
-          {/* Options Mode row */}
-          <div className="flex items-center gap-3 pl-9 flex-wrap">
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="bt-options-mode"
-                checked={btOptionsMode}
-                onChange={(e) => setBtOptionsMode(e.target.checked)}
-                className="h-4 w-4 rounded border-input"
-              />
-              <Label htmlFor="bt-options-mode" className="text-sm whitespace-nowrap">
-                Options Mode
-              </Label>
-            </div>
-            {btOptionsMode && (
-              <>
-                <div className="flex items-center gap-1.5">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Expiry</Label>
-                  <select
-                    value={btOptionsExpiryType}
-                    onChange={(e) => setBtOptionsExpiryType(e.target.value as "weekly" | "monthly")}
-                    className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                  >
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Strike Offset</Label>
-                  <Input
-                    type="number"
-                    value={btOptionsStrikeOffset}
-                    onChange={(e) => setBtOptionsStrikeOffset(e.target.value)}
-                    className="w-20 h-8 text-sm"
-                    min="-5"
-                    max="5"
-                    step="1"
-                    title="0=ATM, +1=one step OTM, -1=one step ITM"
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  BUY signal → ATM CE, SELL signal → ATM PE
-                </span>
-              </>
-            )}
-          </div>
         </div>
       )}
 
@@ -818,52 +760,6 @@ export default function EditStrategyPage() {
                 </button>
               </div>
             </div>
-          </div>
-          {/* Options Mode row */}
-          <div className="flex items-center gap-3 pl-9 flex-wrap">
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="trade-options-mode"
-                checked={tradeOptionsMode}
-                onChange={(e) => setTradeOptionsMode(e.target.checked)}
-                className="h-4 w-4 rounded border-input"
-              />
-              <Label htmlFor="trade-options-mode" className="text-sm whitespace-nowrap">
-                Options Mode
-              </Label>
-            </div>
-            {tradeOptionsMode && (
-              <>
-                <div className="flex items-center gap-1.5">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Expiry</Label>
-                  <select
-                    value={tradeOptionsExpiryType}
-                    onChange={(e) => setTradeOptionsExpiryType(e.target.value as "weekly" | "monthly")}
-                    className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                  >
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Strike Offset</Label>
-                  <Input
-                    type="number"
-                    value={tradeOptionsStrikeOffset}
-                    onChange={(e) => setTradeOptionsStrikeOffset(e.target.value)}
-                    className="w-20 h-8 text-sm"
-                    min="-5"
-                    max="5"
-                    step="1"
-                    title="0=ATM, +1=one step OTM, -1=one step ITM"
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  BUY signal → ATM CE, SELL signal → ATM PE
-                </span>
-              </>
-            )}
           </div>
         </div>
       )}

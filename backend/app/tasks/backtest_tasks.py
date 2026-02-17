@@ -90,11 +90,18 @@ async def _run_backtest(backtest_id: str):
                 await db.commit()
                 return
 
-            # --- Options mode: fetch options instruments + OHLCV data ---
+            # --- Auto-detect index underlyings and pre-fetch options data ---
             params = backtest.parameters or {}
             options_handler = None
 
-            if params.get("options_mode"):
+            # Detect if any instrument is an index that commonly trades options
+            _INDEX_UNDERLYINGS = {"NIFTY 50", "NIFTY", "BANKNIFTY"}
+            _needs_options = any(
+                (s.split(":")[-1] if ":" in s else s).upper() in _INDEX_UNDERLYINGS
+                for s in backtest.instruments
+            )
+
+            if _needs_options:
                 from app.models.instrument import Instrument
                 from app.engine.backtest.options_handler import OptionsHandler
                 from app.services.options_service import (
@@ -104,7 +111,7 @@ async def _run_backtest(backtest_id: str):
                 from app.services.market_data_service import fetch_and_store_from_kite
                 import pandas as pd
 
-                options_handler = OptionsHandler({"parameters": params, "instruments": backtest.instruments})
+                options_handler = OptionsHandler()
                 raw_sym = backtest.instruments[0]
                 clean_sym = raw_sym.split(":")[-1] if ":" in raw_sym else raw_sym
                 underlying_name = underlying_name_from_symbol(clean_sym)
@@ -135,7 +142,7 @@ async def _run_backtest(backtest_id: str):
                 opt_instruments = list(opt_instruments_result.scalars().all())
 
                 if not opt_instruments:
-                    logger.warning("No option instruments found for %s — falling back to spot mode", underlying_name)
+                    logger.info("No option instruments found for %s — options data unavailable", underlying_name)
                     options_handler = None
                 else:
                     # Filter to relevant strikes based on underlying price range

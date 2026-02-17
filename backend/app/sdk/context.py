@@ -235,6 +235,56 @@ class TradingContext:
         )
 
     # ------------------------------------------------------------------
+    # Options helpers
+    # ------------------------------------------------------------------
+
+    def get_atm_strike(self, underlying: str, spot_price: float) -> float:
+        """
+        Return the ATM (at-the-money) strike nearest to *spot_price*.
+
+        Args:
+            underlying: Underlying symbol (e.g. ``"NIFTY 50"``, ``"BANKNIFTY"``).
+            spot_price: Current spot price of the underlying.
+
+        Returns:
+            The nearest ATM strike as a float.
+        """
+        raise NotImplementedError(
+            "get_atm_strike() must be implemented by the execution engine"
+        )
+
+    def get_nearest_expiry(self, underlying: str, ref_date: Any = None) -> Any:
+        """
+        Return the nearest options expiry date on or after *ref_date*.
+
+        Args:
+            underlying: Underlying symbol (e.g. ``"NIFTY 50"``).
+            ref_date: Reference date (defaults to the current bar date).
+
+        Returns:
+            A ``datetime.date`` or ``None`` if no expiry is found.
+        """
+        raise NotImplementedError(
+            "get_nearest_expiry() must be implemented by the execution engine"
+        )
+
+    def get_option_chain(self, underlying: str, expiry: Any = None) -> list[dict]:
+        """
+        Return available option instruments for *underlying* at *expiry*.
+
+        Args:
+            underlying: Underlying symbol (e.g. ``"NIFTY 50"``).
+            expiry: Expiry date (defaults to nearest active expiry).
+
+        Returns:
+            List of dicts with keys: ``tradingsymbol``, ``strike``,
+            ``option_type`` (CE/PE), ``expiry``, ``lot_size``.
+        """
+        raise NotImplementedError(
+            "get_option_chain() must be implemented by the execution engine"
+        )
+
+    # ------------------------------------------------------------------
     # Parameters & logging
     # ------------------------------------------------------------------
 
