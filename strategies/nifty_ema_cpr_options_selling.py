@@ -1,18 +1,62 @@
+import math
+
+
+def _norm_cdf(x):
+    """Approximation of the standard normal CDF."""
+    if x > 6.0:
+        return 1.0
+    if x < -6.0:
+        return 0.0
+    t = 1.0 / (1.0 + 0.2316419 * abs(x))
+    d = 0.3989422804014327  # 1/sqrt(2*pi)
+    p = d * math.exp(-x * x / 2.0) * (
+        t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))))
+    )
+    return 1.0 - p if x > 0 else p
+
+
+def _bs_delta(spot, strike, tte_years, vol, r=0.07, option_type="CE"):
+    """Black-Scholes delta for a European option."""
+    if tte_years <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
+        if option_type == "CE":
+            return 1.0 if spot >= strike else 0.0
+        return -1.0 if spot <= strike else 0.0
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol ** 2) * tte_years) / (vol * math.sqrt(tte_years))
+    if option_type == "CE":
+        return _norm_cdf(d1)
+    return _norm_cdf(d1) - 1.0
+
+
+def _historical_vol(closes, period=20):
+    """Annualized historical volatility from a list of close prices."""
+    if len(closes) < period + 1:
+        return 0.15  # default fallback
+    log_rets = [math.log(closes[i] / closes[i - 1])
+                for i in range(len(closes) - period, len(closes))]
+    mean = sum(log_rets) / len(log_rets)
+    var = sum((r - mean) ** 2 for r in log_rets) / (len(log_rets) - 1)
+    return math.sqrt(var) * math.sqrt(252)
+
+
 class NiftyEMACPRStrategy(Strategy):
     """
     Nifty EMA+CPR Options Selling Strategy
 
     Uses EMA-20/EMA-60 with CPR (Central Pivot Range) levels on a 5-min
-    Nifty Futures chart to generate entry signals.  Implements stepwise
-    trailing stop-loss, 3:10 PM time cutoff, and re-entry blocking.
+    Nifty chart to generate directional signals.  Sells OTM options
+    (PE on bullish signal, CE on bearish signal) targeting delta ~0.4.
+
+    Signal logic runs on the underlying (NIFTY 50); execution is on NFO
+    options.  Stop-loss is tracked on the underlying price.
 
     Parameters:
-        symbol          — Trading symbol (default: "NIFTY 50")
-        exchange        — Exchange (default: "NSE")
-        quantity        — Lot size (default: 25)
+        symbol          — Underlying symbol (default: "NIFTY 50")
+        exchange        — Underlying exchange (default: "NSE")
+        quantity        — Number of lots (default: 1)
+        target_delta    — Option |delta| to target (default: 0.4)
         ema_fast        — Fast EMA period (default: 20)
         ema_slow        — Slow EMA period (default: 60)
-        initial_sl      — Initial stop loss amount (default: 2500)
+        initial_sl      — Initial stop loss in underlying points (default: 2500)
         tsl_activation  — TSL activation profit threshold (default: 2000)
         tsl_lock_pct    — TSL lock-in percentage (default: 50)
         tsl_step_size   — TSL step size (default: 200)
@@ -22,17 +66,17 @@ class NiftyEMACPRStrategy(Strategy):
     """
 
     def on_init(self, ctx):
-        # --- Symbol & sizing ---
+        # --- Underlying ---
         self.symbol = ctx.get_param("symbol", "NIFTY 50")
         self.exchange = ctx.get_param("exchange", "NSE")
-        self.quantity = ctx.get_param("quantity", 25)
-        self.product = ctx.get_param("product", "MIS")
+        self.num_lots = ctx.get_param("quantity", 1)
+        self.target_delta = ctx.get_param("target_delta", 0.4)
 
         # --- EMA periods ---
         self.ema_fast = ctx.get_param("ema_fast", 20)
         self.ema_slow = ctx.get_param("ema_slow", 60)
 
-        # --- Stop-loss & trailing ---
+        # --- Stop-loss & trailing (underlying points) ---
         self.initial_sl = ctx.get_param("initial_sl", 2500)
         self.tsl_activation = ctx.get_param("tsl_activation", 2000)
         self.tsl_lock_pct = ctx.get_param("tsl_lock_pct", 50)
@@ -54,14 +98,18 @@ class NiftyEMACPRStrategy(Strategy):
         self.recent_highs = []
         self.recent_lows = []
 
-        # --- Position state ---
+        # --- Position state (underlying-level) ---
         self.in_long = False
         self.in_short = False
-        self.entry_price = None
+        self.entry_price = None       # underlying price at entry
         self.current_sl = None
         self.peak_profit = 0.0
         self.tsl_step = 0
         self.tsl_active = False
+
+        # --- Options position tracking ---
+        self.held_option = None        # tradingsymbol of the sold option
+        self.held_lot_size = 25        # lot size (updated from chain)
 
         # --- Re-entry blocking ---
         self.block_long = False
@@ -74,11 +122,80 @@ class NiftyEMACPRStrategy(Strategy):
         self.prev_day_close = None
 
         ctx.log(
-            "EMA+CPR Strategy init: symbol=" + self.symbol
-            + " qty=" + str(self.quantity)
+            "EMA+CPR Options Selling init: underlying=" + self.symbol
+            + " lots=" + str(self.num_lots)
+            + " target_delta=" + str(self.target_delta)
             + " SL=" + str(self.initial_sl)
-            + " TSL_act=" + str(self.tsl_activation)
         )
+
+    # ── Option selection ──────────────────────────────────────────
+
+    def _find_option_by_delta(self, ctx, spot, option_type, closes_list):
+        """Find the option with |delta| closest to target_delta.
+
+        For CE: delta is positive (0 to 1). We want delta ~ 0.4.
+        For PE: delta is negative (-1 to 0). We want |delta| ~ 0.4.
+        """
+        expiry = ctx.get_nearest_expiry(self.symbol)
+        if expiry is None:
+            ctx.log("WARNING: No expiry found for options")
+            return None
+
+        chain = ctx.get_option_chain(self.symbol, expiry)
+        if not chain:
+            ctx.log("WARNING: Empty option chain")
+            return None
+
+        # Filter to desired type (CE or PE)
+        options = [o for o in chain if o["option_type"] == option_type]
+        if not options:
+            ctx.log("WARNING: No " + option_type + " options in chain")
+            return None
+
+        # Historical volatility for delta calculation
+        vol = _historical_vol(closes_list)
+
+        # Days to expiry
+        bar = ctx.get_current_bar(self.symbol)
+        if bar and hasattr(bar.get("timestamp"), "date"):
+            bar_date = bar["timestamp"].date()
+        else:
+            bar_date = expiry
+        dte = (expiry - bar_date).days
+        tte_years = max(dte, 1) / 365.0
+
+        # Find option with |delta| closest to target
+        best = None
+        best_diff = float("inf")
+        best_delta = 0.0
+        for opt in options:
+            delta = _bs_delta(spot, opt["strike"], tte_years, vol,
+                              option_type=option_type)
+            diff = abs(abs(delta) - self.target_delta)
+            if diff < best_diff:
+                best_diff = diff
+                best = opt
+                best_delta = delta
+
+        if best:
+            ctx.log(
+                "Selected " + option_type + ": " + best["tradingsymbol"]
+                + " strike=" + str(best["strike"])
+                + " delta=" + str(round(best_delta, 3))
+                + " vol=" + str(round(vol, 3))
+                + " DTE=" + str(dte)
+            )
+        return best
+
+    # ── Exit held option helper ───────────────────────────────────
+
+    def _exit_held_option(self, ctx, reason):
+        """Buy back the sold option to close the position."""
+        if self.held_option:
+            qty = self.num_lots * self.held_lot_size
+            ctx.buy(self.held_option, qty, exchange="NFO", product="NRML")
+            ctx.log("EXIT (" + reason + ") | buyback " + self.held_option
+                    + " x" + str(qty))
 
     # ── Main bar handler ─────────────────────────────────────────
 
@@ -102,6 +219,7 @@ class NiftyEMACPRStrategy(Strategy):
         cur_high = high_s.iloc[-1]
         cur_low = low_s.iloc[-1]
         timestamp = bar["timestamp"]
+        closes_list = list(close)
 
         # Extract IST time from bar timestamp
         bar_hour = timestamp.hour if hasattr(timestamp, "hour") else 0
@@ -149,7 +267,7 @@ class NiftyEMACPRStrategy(Strategy):
 
         # Track bars for swing invalidation
         if self.bullish_trigger or self.bearish_trigger:
-            self.bars_since_trigger = self.bars_since_trigger + 1
+            self.bars_since_trigger += 1
             self.recent_highs.append(cur_high)
             self.recent_lows.append(cur_low)
 
@@ -181,7 +299,7 @@ class NiftyEMACPRStrategy(Strategy):
                 + " BC=" + str(round(bc, 2))
             )
 
-        # ── Trigger invalidation (3-bar swing) ──────────────────
+        # ── Trigger invalidation (swing) ─────────────────────────
         min_bars_for_swing = self.swing_bars * 2 + 1
 
         if self.bullish_trigger and self.bars_since_trigger >= min_bars_for_swing:
@@ -196,43 +314,53 @@ class NiftyEMACPRStrategy(Strategy):
                 self.trigger_low = None
                 ctx.log("Bear trigger INVALIDATED (swing low)")
 
-        # ── Long entry: breakout above trigger high ──────────────
+        # ── Long entry: breakout above trigger high → SELL PE ────
         if (self.bullish_trigger and not self.in_long
                 and not self.block_long and before_cutoff
                 and cur_close > self.trigger_high):
-            ctx.buy(self.symbol, self.quantity,
-                    exchange=self.exchange, product=self.product)
-            self.entry_price = cur_close
-            self.current_sl = cur_close - self.initial_sl
-            self.peak_profit = 0.0
-            self.tsl_step = 0
-            self.tsl_active = False
-            self.in_long = True
-            self.bullish_trigger = False
-            self.trigger_high = None
-            ctx.log(
-                "LONG ENTRY @ " + str(round(cur_close, 2))
-                + " | SL=" + str(round(self.current_sl, 2))
-            )
+            opt = self._find_option_by_delta(ctx, cur_close, "PE", closes_list)
+            if opt:
+                qty = self.num_lots * opt.get("lot_size", 25)
+                self.held_lot_size = opt.get("lot_size", 25)
+                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="NRML")
+                self.held_option = opt["tradingsymbol"]
+                self.entry_price = cur_close
+                self.current_sl = cur_close - self.initial_sl
+                self.peak_profit = 0.0
+                self.tsl_step = 0
+                self.tsl_active = False
+                self.in_long = True
+                self.bullish_trigger = False
+                self.trigger_high = None
+                ctx.log(
+                    "LONG ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
+                    + str(round(cur_close, 2))
+                    + " | SL=" + str(round(self.current_sl, 2))
+                )
 
-        # ── Short entry: breakdown below trigger low ─────────────
+        # ── Short entry: breakdown below trigger low → SELL CE ───
         if (self.bearish_trigger and not self.in_short
                 and not self.block_short and before_cutoff
                 and cur_close < self.trigger_low):
-            ctx.sell(self.symbol, self.quantity,
-                     exchange=self.exchange, product=self.product)
-            self.entry_price = cur_close
-            self.current_sl = cur_close + self.initial_sl
-            self.peak_profit = 0.0
-            self.tsl_step = 0
-            self.tsl_active = False
-            self.in_short = True
-            self.bearish_trigger = False
-            self.trigger_low = None
-            ctx.log(
-                "SHORT ENTRY @ " + str(round(cur_close, 2))
-                + " | SL=" + str(round(self.current_sl, 2))
-            )
+            opt = self._find_option_by_delta(ctx, cur_close, "CE", closes_list)
+            if opt:
+                qty = self.num_lots * opt.get("lot_size", 25)
+                self.held_lot_size = opt.get("lot_size", 25)
+                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="NRML")
+                self.held_option = opt["tradingsymbol"]
+                self.entry_price = cur_close
+                self.current_sl = cur_close + self.initial_sl
+                self.peak_profit = 0.0
+                self.tsl_step = 0
+                self.tsl_active = False
+                self.in_short = True
+                self.bearish_trigger = False
+                self.trigger_low = None
+                ctx.log(
+                    "SHORT ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
+                    + str(round(cur_close, 2))
+                    + " | SL=" + str(round(self.current_sl, 2))
+                )
 
         # ── Stepwise trailing SL — LONG ─────────────────────────
         if self.in_long and self.entry_price is not None:
@@ -265,13 +393,12 @@ class NiftyEMACPRStrategy(Strategy):
                         + " | SL=" + str(round(self.current_sl, 2))
                     )
 
-            # SL hit
+            # SL hit → buy back the sold PE
             if cur_close <= self.current_sl:
-                ctx.sell(self.symbol, self.quantity,
-                         exchange=self.exchange, product=self.product)
                 reason = "TSL" if self.tsl_active else "Initial SL"
+                self._exit_held_option(ctx, "LONG " + reason)
                 ctx.log(
-                    "LONG EXIT (" + reason + ") @ "
+                    "LONG EXIT (" + reason + ") @ underlying="
                     + str(round(cur_close, 2))
                 )
                 if self.tsl_active:
@@ -309,13 +436,12 @@ class NiftyEMACPRStrategy(Strategy):
                         + " | SL=" + str(round(self.current_sl, 2))
                     )
 
-            # SL hit
+            # SL hit → buy back the sold CE
             if cur_close >= self.current_sl:
-                ctx.buy(self.symbol, self.quantity,
-                        exchange=self.exchange, product=self.product)
                 reason = "TSL" if self.tsl_active else "Initial SL"
+                self._exit_held_option(ctx, "SHORT " + reason)
                 ctx.log(
-                    "SHORT EXIT (" + reason + ") @ "
+                    "SHORT EXIT (" + reason + ") @ underlying="
                     + str(round(cur_close, 2))
                 )
                 if self.tsl_active:
@@ -325,15 +451,13 @@ class NiftyEMACPRStrategy(Strategy):
         # ── Time cutoff — 3:10 PM IST ───────────────────────────
         if not before_cutoff:
             if self.in_long:
-                ctx.sell(self.symbol, self.quantity,
-                         exchange=self.exchange, product=self.product)
-                ctx.log("LONG EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
+                self._exit_held_option(ctx, "Cutoff 3:10 PM")
+                ctx.log("LONG EXIT (Cutoff) @ " + str(round(cur_close, 2)))
                 self.reset_position()
 
             if self.in_short:
-                ctx.buy(self.symbol, self.quantity,
-                        exchange=self.exchange, product=self.product)
-                ctx.log("SHORT EXIT (Cutoff 3:10 PM) @ " + str(round(cur_close, 2)))
+                self._exit_held_option(ctx, "Cutoff 3:10 PM")
+                ctx.log("SHORT EXIT (Cutoff) @ " + str(round(cur_close, 2)))
                 self.reset_position()
 
     # ── Helpers ───────────────────────────────────────────────────
@@ -347,6 +471,7 @@ class NiftyEMACPRStrategy(Strategy):
         self.peak_profit = 0.0
         self.tsl_step = 0
         self.tsl_active = False
+        self.held_option = None
 
     def calc_prev_day_hlc(self, data, current_date):
         """Aggregate intraday bars to get previous day's High, Low, Close."""
@@ -412,4 +537,4 @@ class NiftyEMACPRStrategy(Strategy):
         )
 
     def on_stop(self, ctx):
-        ctx.log("EMA+CPR Strategy stopped")
+        ctx.log("EMA+CPR Options Selling Strategy stopped")
