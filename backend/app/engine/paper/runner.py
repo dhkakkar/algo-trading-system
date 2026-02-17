@@ -77,6 +77,7 @@ class PaperTradingContext(TradingContext):
         sym = _clean_symbol(symbol) if symbol else self._primary_symbol()
         if not sym:
             return {}
+        now = datetime.now(IST)
         # Return the real aggregated in-progress bar
         bar = self._runner._current_bars.get(sym)
         if bar:
@@ -86,7 +87,7 @@ class PaperTradingContext(TradingContext):
                 "low": bar["low"],
                 "close": bar["close"],
                 "volume": bar["volume"],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": bar.get("bar_start", now),
             }
         # Fallback: no bar yet, use LTP
         price = self._runner.broker.get_price(sym)
@@ -96,7 +97,7 @@ class PaperTradingContext(TradingContext):
             "low": price or 0,
             "close": price or 0,
             "volume": 0,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now,
         }
 
     def buy(self, symbol: str, quantity: int, order_type: str = "MARKET", price: float | None = None, exchange: str = "NSE", product: str = "MIS") -> str:
@@ -241,6 +242,7 @@ class PaperTradingRunner(BaseRunner):
         # Update broker prices
         self.broker.update_prices(data)
         self._tracked_symbols.update(data.keys())
+        logger.debug("Tick: %s", {k: round(v, 2) for k, v in data.items()})
 
         # --- Bar aggregation ---
         now = datetime.now(timezone.utc)
@@ -276,6 +278,7 @@ class PaperTradingRunner(BaseRunner):
 
         # Call strategy only when a bar completes (matches backtest behaviour)
         if bar_completed and self._strategy_instance and self._context:
+            logger.info("Bar completed — calling on_data (session=%s)", self.session_id)
             try:
                 self._strategy_instance.on_data(self._context)
             except Exception as exc:
@@ -303,21 +306,22 @@ class PaperTradingRunner(BaseRunner):
     def _finalize_bar(self, symbol: str, bar: dict):
         """Append a completed bar to the historical cache DataFrame."""
         import pandas as pd
+        ts = bar["bar_start"]
         new_row = pd.DataFrame([{
             "open": bar["open"],
             "high": bar["high"],
             "low": bar["low"],
             "close": bar["close"],
             "volume": bar["volume"],
-            "timestamp": bar["bar_start"],
-        }])
+        }], index=[ts])
+        new_row.index.name = "timestamp"
         df = self._historical_cache.get(symbol)
         if df is not None and len(df) > 0:
-            self._historical_cache[symbol] = pd.concat([df, new_row], ignore_index=True)
+            self._historical_cache[symbol] = pd.concat([df, new_row])
         else:
             self._historical_cache[symbol] = new_row
-        logger.debug("Bar completed for %s: O=%.2f H=%.2f L=%.2f C=%.2f",
-                      symbol, bar["open"], bar["high"], bar["low"], bar["close"])
+        logger.info("Bar finalized for %s: O=%.2f H=%.2f L=%.2f C=%.2f",
+                     symbol, bar["open"], bar["high"], bar["low"], bar["close"])
 
     async def place_order(self, symbol: str, exchange: str, side: str, quantity: int,
                           order_type: str = "MARKET", price: float | None = None,

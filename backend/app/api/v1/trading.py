@@ -126,8 +126,9 @@ async def start_session(
                 df = pd.DataFrame([{
                     "open": float(r.open), "high": float(r.high),
                     "low": float(r.low), "close": float(r.close),
-                    "volume": int(r.volume), "timestamp": r.time,
-                } for r in records])
+                    "volume": int(r.volume),
+                } for r in records], index=[r.time for r in records])
+                df.index.name = "timestamp"
                 runner._historical_cache[sym.upper()] = df
 
         async def on_tick_update(r):
