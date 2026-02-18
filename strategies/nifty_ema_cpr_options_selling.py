@@ -436,6 +436,13 @@ class NiftyEMACPRStrategy(Strategy):
                 ctx.log("SHORT EXIT (Cutoff) | P&L/lot=" + str(round(pnl, 2)) + " INR")
                 self.reset_position()
 
+            # Clear any pending triggers — no new trades after cutoff
+            self.bullish_trigger = False
+            self.bearish_trigger = False
+            self.trigger_high = None
+            self.trigger_low = None
+            return
+
     # -- Helpers -----------------------------------------------------------
 
     def reset_position(self):

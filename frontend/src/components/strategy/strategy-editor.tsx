@@ -507,6 +507,11 @@ class NiftyEMACPRStrategy(Strategy):
                 self.exit_held_option(ctx, "Cutoff 3:10 PM")
                 ctx.log("SHORT EXIT (Cutoff) | P&L/lot=" + str(round(pnl, 2)) + " INR")
                 self.reset_position()
+            self.bullish_trigger = False
+            self.bearish_trigger = False
+            self.trigger_high = None
+            self.trigger_low = None
+            return
 
     def reset_position(self):
         self.in_long = False
