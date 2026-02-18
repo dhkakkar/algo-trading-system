@@ -36,6 +36,10 @@ class Strategy:
         """Called when an order is filled. Optional."""
         pass
 
+    def on_order_reject(self, ctx: "TradingContext", order: "FilledOrder") -> None:
+        """Called when an order is rejected (e.g. missing OHLCV data). Optional."""
+        pass
+
     def on_stop(self, ctx: "TradingContext") -> None:
         """Called when the strategy stops. Use for cleanup. Optional."""
         pass

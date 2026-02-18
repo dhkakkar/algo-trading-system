@@ -249,6 +249,8 @@ class NiftyEMACPRStrategy(Strategy):
         self.tsl_step_per_lot = ctx.get_param("tsl_step_per_lot", 200)
 
         self.swing_bars = ctx.get_param("swing_bars", 3)
+        self.entry_cutoff_hour = ctx.get_param("entry_cutoff_hour", 14)
+        self.entry_cutoff_minute = ctx.get_param("entry_cutoff_minute", 45)
         self.cutoff_hour = ctx.get_param("cutoff_hour", 15)
         self.cutoff_minute = ctx.get_param("cutoff_minute", 10)
 
@@ -377,6 +379,8 @@ class NiftyEMACPRStrategy(Strategy):
         cur_ema20 = ema20.iloc[-1]
         cur_ema60 = ema60.iloc[-1]
 
+        before_entry_cutoff = (bar_hour < self.entry_cutoff_hour
+            or (bar_hour == self.entry_cutoff_hour and bar_min < self.entry_cutoff_minute))
         before_cutoff = (bar_hour < self.cutoff_hour
             or (bar_hour == self.cutoff_hour and bar_min < self.cutoff_minute))
 
@@ -391,7 +395,7 @@ class NiftyEMACPRStrategy(Strategy):
             self.recent_lows.append(cur_low)
 
         if (bull_cond and not self.bullish_trigger
-                and not self.in_long and not self.block_long and before_cutoff):
+                and not self.in_long and not self.block_long and before_entry_cutoff):
             self.bullish_trigger = True
             self.trigger_high = cur_high
             self.bars_since_trigger = 0
@@ -400,7 +404,7 @@ class NiftyEMACPRStrategy(Strategy):
             ctx.log("BULL TRIGGER | close=" + str(round(cur_close, 2)))
 
         if (bear_cond and not self.bearish_trigger
-                and not self.in_short and not self.block_short and before_cutoff):
+                and not self.in_short and not self.block_short and before_entry_cutoff):
             self.bearish_trigger = True
             self.trigger_low = cur_low
             self.bars_since_trigger = 0
@@ -435,7 +439,7 @@ class NiftyEMACPRStrategy(Strategy):
 
         # Long entry -> SELL PE
         if (self.bullish_trigger and not self.in_long
-                and not self.block_long and before_cutoff
+                and not self.block_long and before_entry_cutoff
                 and cur_close > self.trigger_high):
             opt = self.find_option_by_delta(ctx, cur_close, "PE", closes_list)
             if opt:
@@ -456,7 +460,7 @@ class NiftyEMACPRStrategy(Strategy):
 
         # Short entry -> SELL CE
         if (self.bearish_trigger and not self.in_short
-                and not self.block_short and before_cutoff
+                and not self.block_short and before_entry_cutoff
                 and cur_close < self.trigger_low):
             opt = self.find_option_by_delta(ctx, cur_close, "CE", closes_list)
             if opt:
@@ -620,6 +624,12 @@ class NiftyEMACPRStrategy(Strategy):
             ctx.log("Entry premium: " + str(round(order.fill_price, 2))
                     + " | lot_size=" + str(self.held_lot_size))
         elif order.side == "BUY" and (self.in_long or self.in_short):
+            self.reset_position()
+
+    def on_order_reject(self, ctx, order):
+        ctx.log("ORDER REJECTED: " + order.side + " " + order.symbol
+                + " x" + str(order.quantity) + " (no OHLCV data)")
+        if self.in_long or self.in_short:
             self.reset_position()
 
     def on_stop(self, ctx):

@@ -1039,16 +1039,38 @@ class BacktestRunner(BaseRunner):
                 if order.order_type.upper() in ("LIMIT", "SL", "SL-M"):
                     still_pending.append(order)
                 else:
-                    # Market orders that couldn't fill (shouldn't happen normally)
+                    # Market orders that couldn't fill — usually missing OHLCV data
                     order.status = "rejected"
                     for rec in self.portfolio.orders:
                         if rec["order_id"] == order.order_id:
                             rec["status"] = "rejected"
                             break
-                    self._add_log("WARNING", f"Market order for {order.symbol} rejected — could not fill at bar {current_bar_index}", "runner")
+                    reason = "no OHLCV data" if current_bar is None else "execution failed"
+                    self._add_log(
+                        "WARNING",
+                        f"Market order for {order.symbol} rejected — {reason} at bar {current_bar_index} "
+                        f"({order.side} x{order.quantity})",
+                        "runner",
+                    )
+                    # Notify strategy so it can reset position state
+                    try:
+                        rejected_order = FilledOrder(
+                            order_id=order.order_id,
+                            symbol=order.symbol,
+                            exchange=order.exchange,
+                            side=order.side,
+                            quantity=order.quantity,
+                            fill_price=0.0,
+                            timestamp=self.data_handler.current_timestamp,
+                        )
+                        rejected_order.rejected = True
+                        if hasattr(self._strategy_instance, "on_order_reject"):
+                            self._strategy_instance.on_order_reject(self._context, rejected_order)
+                    except Exception:
+                        pass
                     logger.warning(
-                        "Market order for %s could not be filled at bar %d",
-                        order.symbol, current_bar_index,
+                        "Market order for %s could not be filled at bar %d (%s)",
+                        order.symbol, current_bar_index, reason,
                     )
 
         self._pending_orders = still_pending

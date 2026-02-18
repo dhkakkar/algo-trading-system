@@ -909,6 +909,8 @@ export default function BacktestDetailPage() {
             markers.push({ time: parseTime(log.timestamp), position: "belowBar", color: "#3b82f6", shape: "circle", text: "Bull" });
           } else if (log.message.startsWith("BEAR TRIGGER")) {
             markers.push({ time: parseTime(log.timestamp), position: "aboveBar", color: "#f97316", shape: "circle", text: "Bear" });
+          } else if (log.message.includes("rejected") || log.message.startsWith("ORDER REJECTED")) {
+            markers.push({ time: parseTime(log.timestamp), position: "aboveBar", color: "#ef4444", shape: "square", text: "REJECTED" });
           }
         });
       }
@@ -1267,6 +1269,14 @@ export default function BacktestDetailPage() {
               color: "#f97316",
               shape: "circle",
               text: "Bear",
+            });
+          } else if (log.message.includes("rejected") || log.message.startsWith("ORDER REJECTED")) {
+            markers.push({
+              time: parseTime(log.timestamp),
+              position: "aboveBar",
+              color: "#ef4444",
+              shape: "square",
+              text: "REJECTED",
             });
           }
         });
