@@ -21,6 +21,7 @@ import {
   IndicatorPanel,
   applyIndicators,
 } from "./chart-indicators";
+import { DrawingToolbar } from "./drawing-tools";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -525,6 +526,9 @@ export default function LiveChart({
         >
           <Grid3X3 className="h-3.5 w-3.5" />
         </button>
+        {chartRef.current && candleSeriesRef.current && (
+          <DrawingToolbar chart={chartRef.current} series={candleSeriesRef.current} storageKey={`live_chart_drawings_${instruments.join(",")}`} />
+        )}
       </div>
 
       {/* Chart area */}

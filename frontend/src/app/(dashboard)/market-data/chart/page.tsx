@@ -27,6 +27,7 @@ import {
   IndicatorPanel,
   applyIndicators,
 } from "@/components/charts/chart-indicators";
+import { DrawingToolbar } from "@/components/charts/drawing-tools";
 
 const INTERVAL_OPTIONS = [
   { value: "1m", label: "1m" },
@@ -859,6 +860,10 @@ export default function ChartPage() {
             <Grid3X3 className="h-3.5 w-3.5" />
           </button>
 
+          {chartRef.current && candleSeriesRef.current && (
+            <DrawingToolbar chart={chartRef.current} series={candleSeriesRef.current} storageKey={`md_chart_drawings_${symbol}`} />
+          )}
+
           <div className="flex items-center gap-2">
             <Label htmlFor="from" className="text-sm whitespace-nowrap">From</Label>
             <Input
@@ -905,26 +910,7 @@ export default function ChartPage() {
                 )}
               </button>
               {showIndicatorPanel && (
-                <IndicatorPanel config={indicators} onChange={(cfg) => {
-                  setIndicators(cfg);
-                  // Re-apply indicators to replay slice
-                  if (chartRef.current && candleSeriesRef.current) {
-                    const slice = dataRef.current.slice(0, replayIndexRef.current + 1);
-                    const isDaily = intervalRef.current === "1d";
-                    const parseTime = (timeStr: string) => {
-                      if (isDaily) return timeStr.slice(0, 10);
-                      return Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
-                    };
-                    const candleData = slice.map((bar) => ({
-                      time: parseTime(bar.time),
-                      open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-                    }));
-                    const sliceVolumes = slice.map((b) => b.volume);
-                    // Need to update ref first since applyIndicators uses the ref
-                    indicatorsRef.current = cfg;
-                    applyIndicators(chartRef.current, candleSeriesRef.current, candleData as CandleData[], sliceVolumes, cfg, indicatorSeriesRef);
-                  }
-                }} onClose={() => setShowIndicatorPanel(false)} />
+                <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
               )}
             </div>
 
@@ -940,6 +926,10 @@ export default function ChartPage() {
             >
               <Grid3X3 className="h-3.5 w-3.5" />
             </button>
+
+            {chartRef.current && candleSeriesRef.current && (
+              <DrawingToolbar chart={chartRef.current} series={candleSeriesRef.current} storageKey={`md_chart_drawings_${symbol}`} />
+            )}
           </div>
 
           {/* Replay controls row */}

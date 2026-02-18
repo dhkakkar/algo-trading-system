@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useBacktestStore } from "@/stores/backtest-store";
 import { formatCurrency, formatPercent, cn } from "@/lib/utils";
@@ -18,7 +18,15 @@ import {
   Download,
   Settings2,
   Grid3X3,
+  Play,
+  Pause,
+  SkipForward,
+  RotateCcw,
+  X,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type { BacktestTrade } from "@/types/backtest";
 import {
   IndicatorConfig,
@@ -27,6 +35,7 @@ import {
   IndicatorPanel,
   applyIndicators,
 } from "@/components/charts/chart-indicators";
+import { DrawingToolbar } from "@/components/charts/drawing-tools";
 
 // ---------------------------------------------------------------------------
 // Compute detailed trade statistics from the trades array (client-side)
@@ -530,6 +539,26 @@ export default function BacktestDetailPage() {
     return true;
   });
 
+  // Replay state for trade chart
+  const REPLAY_SPEEDS = [1, 2, 5, 10, 25, 50];
+  const [replayMode, setReplayMode] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replaySpeed, setReplaySpeed] = useState(1);
+  const replayIndexRef = useRef(0);
+  const replayTimerRef = useRef<number | null>(null);
+  const [showReplayPicker, setShowReplayPicker] = useState(false);
+  const [replayStartDate, setReplayStartDate] = useState("");
+  const [replayStartTime, setReplayStartTime] = useState("09:15");
+  const candleSeriesRefBT = useRef<any>(null);
+  const volumeSeriesRefBT = useRef<any>(null);
+  const chartOHLCVRef = useRef<any[]>([]);
+  const indicatorsRef = useRef<IndicatorConfig>(indicators);
+
+  // Keep refs in sync
+  useEffect(() => { chartOHLCVRef.current = chartOHLCV; }, [chartOHLCV]);
+  useEffect(() => { indicatorsRef.current = indicators; }, [indicators]);
+
   // Persist grid preference and apply to all charts
   useEffect(() => {
     localStorage.setItem("chart_grid_visible", String(showGrid));
@@ -797,6 +826,222 @@ export default function BacktestDetailPage() {
     return { exchange: "NSE", symbol: raw };
   };
 
+  // --- Replay functions for backtest chart ---
+  const updateBTChartToIndex = useCallback((index: number) => {
+    if (!candleSeriesRefBT.current || !volumeSeriesRefBT.current || chartOHLCVRef.current.length === 0 || !bt) return;
+
+    const isDaily = bt.timeframe === "1d";
+    const parseTime = (timeStr: string) => {
+      if (isDaily) return timeStr.slice(0, 10);
+      return Math.floor(new Date(timeStr).getTime() / 1000) + 19800;
+    };
+
+    const slice = chartOHLCVRef.current.slice(0, index + 1);
+    const candleData = slice.map((bar: any) => ({
+      time: parseTime(bar.time),
+      open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close),
+    }));
+    const volumeData = slice.map((bar: any) => ({
+      time: parseTime(bar.time),
+      value: Number(bar.volume),
+      color: Number(bar.close) >= Number(bar.open) ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+    }));
+
+    candleSeriesRefBT.current.setData(candleData as any);
+    volumeSeriesRefBT.current.setData(volumeData as any);
+
+    // Filter trade markers to only show trades before current bar time
+    const currentBarTime = slice[slice.length - 1]?.time;
+    if (currentBarTime && tradeChartObjRef.current) {
+      const rawInst = chartSymbol || bt.instruments?.[0] || "";
+      const parsed = parseInstrument(rawInst);
+      const isUnderlying = (bt.instruments || []).some(
+        (inst: string) => parseInstrument(inst).symbol.toUpperCase() === parsed.symbol.toUpperCase()
+      );
+      const symbolTrades = isUnderlying
+        ? trades
+        : trades.filter((t) => t.symbol.toUpperCase() === parsed.symbol.toUpperCase());
+
+      const barMs = new Date(currentBarTime).getTime();
+      const markers: any[] = [];
+      symbolTrades.forEach((t, i) => {
+        const entryMs = new Date(t.entry_at).getTime();
+        if (entryMs > barMs) return;
+        const isLong = t.side === "LONG" || t.side === "BUY";
+        const tradeNum = i + 1;
+        const sym = t.symbol.toUpperCase();
+        const optType = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : "";
+
+        markers.push({
+          time: parseTime(t.entry_at),
+          position: isLong ? "belowBar" : "aboveBar",
+          color: "#22c55e",
+          shape: isLong ? "arrowUp" : "arrowDown",
+          text: isUnderlying && optType ? `${isLong ? "Buy" : "Sell"} ${optType} #${tradeNum}` : `#${tradeNum}`,
+        });
+
+        if (t.exit_at) {
+          const exitMs = new Date(t.exit_at).getTime();
+          if (exitMs <= barMs) {
+            markers.push({
+              time: parseTime(t.exit_at),
+              position: isLong ? "aboveBar" : "belowBar",
+              color: "#ef4444",
+              shape: isLong ? "arrowDown" : "arrowUp",
+              text: isUnderlying ? `Exit #${tradeNum}` : `#${tradeNum}`,
+            });
+          }
+        }
+      });
+
+      // Trigger markers from logs
+      if (isUnderlying && logs.length > 0) {
+        logs.forEach((log) => {
+          const logMs = new Date(log.timestamp).getTime();
+          if (logMs > barMs) return;
+          if (log.message.startsWith("BULL TRIGGER")) {
+            markers.push({ time: parseTime(log.timestamp), position: "belowBar", color: "#3b82f6", shape: "circle", text: "Bull" });
+          } else if (log.message.startsWith("BEAR TRIGGER")) {
+            markers.push({ time: parseTime(log.timestamp), position: "aboveBar", color: "#f97316", shape: "circle", text: "Bear" });
+          }
+        });
+      }
+
+      markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+      candleSeriesRefBT.current.setMarkers(markers);
+    }
+
+    // Apply indicators to sliced data
+    if (tradeChartObjRef.current && candleSeriesRefBT.current) {
+      const sliceVolumes = slice.map((b: any) => Number(b.volume));
+      applyIndicators(tradeChartObjRef.current, candleSeriesRefBT.current, candleData as CandleData[], sliceVolumes, indicatorsRef.current, indicatorSeriesRef);
+      tradeChartObjRef.current.timeScale().scrollToRealTime();
+    }
+  }, [bt, chartSymbol, trades, logs]);
+
+  const openBTReplayPicker = useCallback(() => {
+    if (chartOHLCVRef.current.length === 0) return;
+    const firstBar = chartOHLCVRef.current[0];
+    const d = new Date(firstBar.time);
+    setReplayStartDate(d.toISOString().slice(0, 10));
+    setReplayStartTime(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
+    setShowReplayPicker(true);
+  }, []);
+
+  const startBTReplayFromPicker = useCallback(() => {
+    if (chartOHLCVRef.current.length === 0) return;
+    setShowReplayPicker(false);
+    const targetStr = `${replayStartDate}T${replayStartTime}:00`;
+    const targetMs = new Date(targetStr).getTime();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < chartOHLCVRef.current.length; i++) {
+      const barMs = new Date(chartOHLCVRef.current[i].time).getTime();
+      const diff = Math.abs(barMs - targetMs);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    setReplayMode(true);
+    setIsPlaying(false);
+    setReplaySpeed(1);
+    setReplayIndex(bestIdx);
+    replayIndexRef.current = bestIdx;
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+    updateBTChartToIndex(bestIdx);
+  }, [replayStartDate, replayStartTime, updateBTChartToIndex]);
+
+  const exitBTReplay = useCallback(() => {
+    setReplayMode(false);
+    setIsPlaying(false);
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+    // Restore full chart by re-triggering the chart effect
+    candleSeriesRefBT.current = null;
+    volumeSeriesRefBT.current = null;
+  }, []);
+
+  const stepBTForward = useCallback(() => {
+    if (replayIndexRef.current >= chartOHLCVRef.current.length - 1) return;
+    const next = replayIndexRef.current + 1;
+    replayIndexRef.current = next;
+    setReplayIndex(next);
+    updateBTChartToIndex(next);
+  }, [updateBTChartToIndex]);
+
+  const resetBTReplay = useCallback(() => {
+    setIsPlaying(false);
+    if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+    replayIndexRef.current = 0;
+    setReplayIndex(0);
+    updateBTChartToIndex(0);
+  }, [updateBTChartToIndex]);
+
+  const toggleBTPlay = useCallback(() => {
+    if (isPlaying) {
+      setIsPlaying(false);
+      if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+    } else {
+      if (replayIndexRef.current >= chartOHLCVRef.current.length - 1) {
+        replayIndexRef.current = 0;
+        setReplayIndex(0);
+        updateBTChartToIndex(0);
+      }
+      setIsPlaying(true);
+    }
+  }, [isPlaying, updateBTChartToIndex]);
+
+  const handleBTSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const idx = parseInt(e.target.value);
+    replayIndexRef.current = idx;
+    setReplayIndex(idx);
+    updateBTChartToIndex(idx);
+  }, [updateBTChartToIndex]);
+
+  // Play timer for backtest replay
+  useEffect(() => {
+    if (!isPlaying || !replayMode || activeTab !== "chart") return;
+    const intervalMs = Math.max(500 / replaySpeed, 20);
+    const timer = window.setInterval(() => {
+      const next = replayIndexRef.current + 1;
+      if (next >= chartOHLCVRef.current.length) {
+        setIsPlaying(false);
+        return;
+      }
+      replayIndexRef.current = next;
+      setReplayIndex(next);
+      updateBTChartToIndex(next);
+    }, intervalMs) as unknown as number;
+    replayTimerRef.current = timer;
+    return () => { clearInterval(timer); replayTimerRef.current = null; };
+  }, [isPlaying, replayMode, replaySpeed, activeTab, updateBTChartToIndex]);
+
+  // Re-apply indicators when config changes in replay mode
+  useEffect(() => {
+    if (!replayMode || !tradeChartObjRef.current || !candleSeriesRefBT.current || !bt) return;
+    const isDaily = bt.timeframe === "1d";
+    const parseTime = (timeStr: string) => {
+      if (isDaily) return timeStr.slice(0, 10);
+      return Math.floor(new Date(timeStr).getTime() / 1000) + 19800;
+    };
+    const slice = chartOHLCVRef.current.slice(0, replayIndexRef.current + 1);
+    if (slice.length === 0) return;
+    const candleData = slice.map((bar: any) => ({
+      time: parseTime(bar.time), open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close),
+    }));
+    const sliceVolumes = slice.map((b: any) => Number(b.volume));
+    applyIndicators(tradeChartObjRef.current, candleSeriesRefBT.current, candleData as CandleData[], sliceVolumes, indicators, indicatorSeriesRef);
+  }, [indicators, replayMode, bt]);
+
+  // Exit replay when chart symbol changes
+  useEffect(() => {
+    if (replayMode) {
+      setReplayMode(false);
+      setIsPlaying(false);
+      if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+      candleSeriesRefBT.current = null;
+      volumeSeriesRefBT.current = null;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartSymbol]);
+
   // Fetch OHLCV data when chart tab is active
   useEffect(() => {
     if (activeTab !== "chart" || !bt || bt.status !== "completed") return;
@@ -828,6 +1073,8 @@ export default function BacktestDetailPage() {
   // Render trade signal chart
   useEffect(() => {
     if (activeTab !== "chart" || !chartOHLCV.length || !tradeChartRef.current || !bt) return;
+    // Don't rebuild chart when in replay mode — replay functions handle data updates
+    if (replayMode) return;
 
     let cleanup: (() => void) | undefined;
 
@@ -836,6 +1083,8 @@ export default function BacktestDetailPage() {
       tradeChartRef.current.innerHTML = "";
       // Reset indicator series refs — old chart is destroyed, stale refs cause silent failures
       indicatorSeriesRef.current = {};
+      candleSeriesRefBT.current = null;
+      volumeSeriesRefBT.current = null;
 
       const isDaily = bt.timeframe === "1d";
       const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -919,6 +1168,10 @@ export default function BacktestDetailPage() {
             : "rgba(239,68,68,0.3)",
         })) as any
       );
+
+      // Store refs for replay mode
+      candleSeriesRefBT.current = candleSeries;
+      volumeSeriesRefBT.current = volumeSeries;
 
       // Trade entry/exit markers + connecting lines
       const rawInst = chartSymbol || bt.instruments?.[0] || "";
@@ -1127,11 +1380,13 @@ export default function BacktestDetailPage() {
         window.removeEventListener("resize", handleResize);
         chart.remove();
         tradeChartObjRef.current = null;
+        candleSeriesRefBT.current = null;
+        volumeSeriesRefBT.current = null;
       };
     });
 
     return () => cleanup?.();
-  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs]);
+  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs, replayMode]);
 
   if (loading && !bt) {
     return (
@@ -1787,51 +2042,69 @@ export default function BacktestDetailPage() {
                 </div>
               )}
 
-              {/* Legend + Indicator toggle */}
+              {/* Legend + Indicator toggle + Replay */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" />
-                    Bull Trigger
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block w-2.5 h-2.5 rounded-full bg-orange-500" />
-                    Bear Trigger
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
-                    Entry
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
-                    Exit
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block w-6 border-t border-dashed border-green-500" />
-                    Win
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block w-6 border-t border-dashed border-red-500" />
-                    Loss
-                  </span>
-                  {bt.timeframe !== "1d" && (
+                  {!replayMode && (
                     <>
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-6 border-t border-dotted border-gray-400" />
-                        Pivot
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" />
+                        Bull Trigger
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full bg-orange-500" />
+                        Bear Trigger
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-b-[8px] border-l-transparent border-r-transparent border-b-green-500" />
+                        Entry
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block w-0 h-0 border-l-[5px] border-r-[5px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
+                        Exit
                       </span>
                       <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(34,197,94,0.6)" }} />
-                        TC
+                        <span className="inline-block w-6 border-t border-dashed border-green-500" />
+                        Win
                       </span>
                       <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(239,68,68,0.6)" }} />
-                        BC
+                        <span className="inline-block w-6 border-t border-dashed border-red-500" />
+                        Loss
                       </span>
+                      {bt.timeframe !== "1d" && (
+                        <>
+                          <span className="flex items-center gap-1.5">
+                            <span className="inline-block w-6 border-t border-dotted border-gray-400" />
+                            Pivot
+                          </span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(34,197,94,0.6)" }} />
+                            TC
+                          </span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="inline-block w-6 border-t border-dotted" style={{ borderColor: "rgba(239,68,68,0.6)" }} />
+                            BC
+                          </span>
+                        </>
+                      )}
                     </>
+                  )}
+                  {replayMode && (
+                    <span className="text-sm font-medium text-purple-400">Replay Mode</span>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {!replayMode && chartOHLCV.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={openBTReplayPicker}
+                      className="text-purple-600 border-purple-500/50 hover:bg-purple-500/10 h-8 text-xs"
+                    >
+                      <Play className="h-3.5 w-3.5 mr-1" />
+                      Replay
+                    </Button>
+                  )}
                   <button
                     onClick={() => setShowGrid(!showGrid)}
                     className={cn(
@@ -1861,8 +2134,105 @@ export default function BacktestDetailPage() {
                       <IndicatorPanel config={indicators} onChange={setIndicators} onClose={() => setShowIndicatorPanel(false)} />
                     )}
                   </div>
+                  {tradeChartObjRef.current && candleSeriesRefBT.current && (
+                    <DrawingToolbar chart={tradeChartObjRef.current} series={candleSeriesRefBT.current} storageKey={`bt_chart_drawings_${backtestId}`} />
+                  )}
                 </div>
               </div>
+
+              {/* Replay controls */}
+              {replayMode && (
+                <div className="flex items-center gap-3 flex-wrap rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleBTPlay}>
+                    {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={stepBTForward} disabled={isPlaying || replayIndex >= chartOHLCV.length - 1}>
+                    <SkipForward className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={resetBTReplay}>
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                  <div className="w-px h-6 bg-border" />
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-muted-foreground mr-1">Speed:</span>
+                    {REPLAY_SPEEDS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setReplaySpeed(s)}
+                        className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                          replaySpeed === s ? "bg-purple-600 text-white" : "bg-muted text-muted-foreground hover:bg-muted/80"
+                        }`}
+                      >
+                        {s}x
+                      </button>
+                    ))}
+                  </div>
+                  <div className="w-px h-6 bg-border" />
+                  <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(chartOHLCV.length - 1, 0)}
+                      value={replayIndex}
+                      onChange={handleBTSeek}
+                      className="flex-1 h-1.5 accent-purple-600 cursor-pointer"
+                    />
+                    <span className="text-xs text-muted-foreground font-mono whitespace-nowrap">
+                      {replayIndex + 1} / {chartOHLCV.length}
+                    </span>
+                  </div>
+                  <div className="w-px h-6 bg-border" />
+                  <Button variant="ghost" size="sm" onClick={exitBTReplay} className="text-xs text-muted-foreground hover:text-foreground">
+                    <X className="h-3.5 w-3.5 mr-1" />
+                    Exit Replay
+                  </Button>
+                </div>
+              )}
+
+              {/* Replay start picker modal */}
+              {showReplayPicker && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowReplayPicker(false)}>
+                  <div className="bg-card border rounded-lg shadow-lg p-6 w-[380px] space-y-4" onClick={(e) => e.stopPropagation()}>
+                    <h3 className="text-lg font-semibold">Start Replay From</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Choose where to begin the replay. Data range: {chartOHLCV.length > 0 ? new Date(chartOHLCV[0].time).toLocaleDateString("en-IN") : "—"} to {chartOHLCV.length > 0 ? new Date(chartOHLCV[chartOHLCV.length - 1].time).toLocaleDateString("en-IN") : "—"}
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 space-y-1">
+                        <Label htmlFor="bt-replay-date" className="text-xs text-muted-foreground">Date</Label>
+                        <Input
+                          id="bt-replay-date"
+                          type="date"
+                          value={replayStartDate}
+                          onChange={(e) => setReplayStartDate(e.target.value)}
+                          className="h-9"
+                        />
+                      </div>
+                      {bt.timeframe !== "1d" && (
+                        <div className="w-28 space-y-1">
+                          <Label htmlFor="bt-replay-time" className="text-xs text-muted-foreground">Time</Label>
+                          <Input
+                            id="bt-replay-time"
+                            type="time"
+                            value={replayStartTime}
+                            onChange={(e) => setReplayStartTime(e.target.value)}
+                            className="h-9"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 pt-2">
+                      <Button variant="outline" size="sm" onClick={() => setShowReplayPicker(false)} className="flex-1">
+                        Cancel
+                      </Button>
+                      <Button size="sm" onClick={startBTReplayFromPicker} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white">
+                        <Play className="h-4 w-4 mr-1" />
+                        Start Replay
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <Card>
                 <CardContent className="pt-4">
