@@ -28,6 +28,7 @@ import {
   applyIndicators,
 } from "@/components/charts/chart-indicators";
 import { DrawingToolbar } from "@/components/charts/drawing-tools";
+import { ChartTooltip } from "@/components/charts/chart-tooltip";
 
 const INTERVAL_OPTIONS = [
   { value: "1m", label: "1m" },
@@ -1098,6 +1099,9 @@ export default function ChartPage() {
           <div className="absolute inset-0 flex items-center justify-center">
             <p className="text-muted-foreground text-sm">{error}</p>
           </div>
+        )}
+        {chartRef.current && candleSeriesRef.current && (
+          <ChartTooltip chart={chartRef.current} candleSeries={candleSeriesRef.current} volumeSeries={volumeSeriesRef.current} />
         )}
         <div ref={chartContainerRef} className="w-full h-full min-h-[400px]" />
       </div>

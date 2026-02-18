@@ -36,6 +36,7 @@ import {
   applyIndicators,
 } from "@/components/charts/chart-indicators";
 import { DrawingToolbar } from "@/components/charts/drawing-tools";
+import { ChartTooltip } from "@/components/charts/chart-tooltip";
 
 // ---------------------------------------------------------------------------
 // Compute detailed trade statistics from the trades array (client-side)
@@ -2247,7 +2248,12 @@ export default function BacktestDetailPage() {
                       Ensure market data has been fetched for this symbol and date range.
                     </div>
                   ) : (
-                    <div ref={tradeChartRef} />
+                    <div className="relative">
+                      {tradeChartObjRef.current && candleSeriesRefBT.current && (
+                        <ChartTooltip chart={tradeChartObjRef.current} candleSeries={candleSeriesRefBT.current} volumeSeries={volumeSeriesRefBT.current} />
+                      )}
+                      <div ref={tradeChartRef} />
+                    </div>
                   )}
                 </CardContent>
               </Card>

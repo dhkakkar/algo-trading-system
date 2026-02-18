@@ -268,8 +268,8 @@ class NiftyEMACPRStrategy(Strategy):
         )
 
         # -- Trigger conditions --------------------------------------------
-        bull_cond = cur_close > cur_ema20 and cur_close > cur_ema60 and cur_close > tc
-        bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < bc
+        bull_cond = cur_close > cur_ema20 and cur_close > cur_ema60 and cur_close > pivot
+        bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < pivot
 
         if self.bullish_trigger or self.bearish_trigger:
             self.bars_since_trigger = self.bars_since_trigger + 1
@@ -416,11 +416,10 @@ class NiftyEMACPRStrategy(Strategy):
                     self.exit_held_option(ctx, direction + " " + reason)
                     ctx.log(direction + " EXIT (" + reason + ") | P&L/lot="
                             + str(round(pnl_per_lot, 2)) + " INR")
-                    if self.tsl_active:
-                        if self.in_long:
-                            self.block_long = True
-                        else:
-                            self.block_short = True
+                    if self.in_long:
+                        self.block_long = True
+                    else:
+                        self.block_short = True
                     self.reset_position()
 
         # -- Time cutoff -- 3:10 PM IST ------------------------------------

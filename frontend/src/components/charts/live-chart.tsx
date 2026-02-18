@@ -22,6 +22,7 @@ import {
   applyIndicators,
 } from "./chart-indicators";
 import { DrawingToolbar } from "./drawing-tools";
+import { ChartTooltip } from "./chart-tooltip";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -546,6 +547,9 @@ export default function LiveChart({
               <button onClick={() => { setChartError(null); setChartLoading(true); }} className="text-xs text-primary hover:underline">Retry</button>
             </div>
           </div>
+        )}
+        {chartRef.current && candleSeriesRef.current && (
+          <ChartTooltip chart={chartRef.current} candleSeries={candleSeriesRef.current} volumeSeries={volumeSeriesRef.current} />
         )}
         <div ref={chartContainerRef} className="w-full h-full min-h-[350px]" />
         {!isRunning && !chartLoading && !chartError && (
