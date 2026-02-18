@@ -150,6 +150,7 @@ export default function ChartPage() {
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [chartReady, setChartReady] = useState(0);
   const [showGrid, setShowGrid] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("chart_grid_visible") !== "false";
@@ -692,6 +693,7 @@ export default function ChartPage() {
       volumeSeriesRef.current = volumeSeries;
       rawCandlesRef.current = candleData as CandleData[];
       rawVolumesRef.current = data.map((b) => b.volume);
+      setChartReady(c => c + 1);
 
       // Apply indicators
       applyIndicators(chart, candleSeries, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);

@@ -104,6 +104,7 @@ export default function LiveChart({
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [chartReady, setChartReady] = useState(0);
   const [showGrid, setShowGrid] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem(STORAGE_KEY_GRID) !== "false";
@@ -312,6 +313,7 @@ export default function LiveChart({
         volumeSeriesRef.current = volumeSeries;
         rawCandlesRef.current = uniqueCandles;
         rawVolumesRef.current = sortedRawVolumes;
+        setChartReady(c => c + 1);
 
         applyIndicators(chart, candleSeries, uniqueCandles, sortedRawVolumes, indicators, indicatorSeriesRef);
 

@@ -533,6 +533,7 @@ export default function BacktestDetailPage() {
     return DEFAULT_INDICATORS;
   });
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+  const [chartReady, setChartReady] = useState(0);
   const [showGrid, setShowGrid] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("chart_grid_visible") !== "false";
@@ -1369,6 +1370,7 @@ export default function BacktestDetailPage() {
 
       chart.timeScale().fitContent();
       tradeChartObjRef.current = chart;
+      setChartReady(c => c + 1);
 
       const handleResize = () => {
         if (tradeChartRef.current) {
