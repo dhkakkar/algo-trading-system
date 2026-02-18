@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useTradingStore } from "@/stores/trading-store";
 import { connectSocket } from "@/lib/socket-client";
@@ -24,6 +24,7 @@ import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/tradin
 import apiClient from "@/lib/api-client";
 import { useToastStore } from "@/stores/toast-store";
 import LiveChart from "@/components/charts/live-chart";
+import type { ChartMarker } from "@/components/charts/chart-indicators";
 
 // ---------------------------------------------------------------------------
 // StatusBadge
@@ -231,6 +232,91 @@ export default function PaperTradingDetailPage() {
     else if (activeTab === "logs") fetchLogs();
   }, [activeTab, fetchOrders, fetchTrades, fetchLogs]);
 
+  // Fetch trades + logs for chart markers (separate from tab-display fetching)
+  const [chartTrades, setChartTrades] = useState<TradingTrade[]>([]);
+  const [chartLogs, setChartLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchForChart = async () => {
+      try {
+        const [tradesRes, logsRes] = await Promise.all([
+          apiClient.get(`/trading/sessions/${sessionId}/trades`, { _suppressToast: true } as any),
+          apiClient.get(`/trading/sessions/${sessionId}/logs?limit=500`, { _suppressToast: true } as any),
+        ]);
+        setChartTrades(tradesRes.data || []);
+        setChartLogs(logsRes.data || []);
+      } catch {
+        // silently fail — chart markers are supplementary
+      }
+    };
+    fetchForChart();
+
+    if (session?.status === "running") {
+      const interval = setInterval(fetchForChart, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [sessionId, session?.status]);
+
+  // Build chart markers from trades + logs
+  const chartMarkers = useMemo<ChartMarker[]>(() => {
+    const m: ChartMarker[] = [];
+
+    chartTrades.forEach((t, i) => {
+      const isLong = t.side === "LONG" || t.side === "BUY";
+      const tradeNum = i + 1;
+      const sym = (t.tradingsymbol || "").toUpperCase();
+      const optType = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : "";
+
+      // Entry marker
+      if (t.entry_at) {
+        m.push({
+          time: t.entry_at,
+          position: isLong ? "belowBar" : "aboveBar",
+          color: "#22c55e",
+          shape: isLong ? "arrowUp" : "arrowDown",
+          text: optType
+            ? `${isLong ? "Buy" : "Sell"} ${optType} #${tradeNum}`
+            : `#${tradeNum}`,
+        });
+      }
+
+      // Exit marker
+      if (t.exit_at) {
+        m.push({
+          time: t.exit_at,
+          position: isLong ? "aboveBar" : "belowBar",
+          color: "#ef4444",
+          shape: isLong ? "arrowDown" : "arrowUp",
+          text: `Exit #${tradeNum}`,
+        });
+      }
+    });
+
+    // Trigger markers from strategy logs
+    chartLogs.forEach((log) => {
+      if (!log.timestamp) return;
+      if (log.message?.startsWith("BULL TRIGGER")) {
+        m.push({
+          time: log.timestamp,
+          position: "belowBar",
+          color: "#3b82f6",
+          shape: "circle",
+          text: "Bull",
+        });
+      } else if (log.message?.startsWith("BEAR TRIGGER")) {
+        m.push({
+          time: log.timestamp,
+          position: "aboveBar",
+          color: "#f97316",
+          shape: "circle",
+          text: "Bear",
+        });
+      }
+    });
+
+    return m;
+  }, [chartTrades, chartLogs]);
+
   const handleStart = async () => { await startSession(sessionId); fetchSnapshot(sessionId); };
   const handleStop = async () => { await stopSession(sessionId); };
   const handlePause = async () => { await pauseSession(sessionId); };
@@ -372,6 +458,7 @@ export default function PaperTradingDetailPage() {
             snapshot={snapshot}
             isRunning={isRunning}
             brokerConnected={brokerStatus === null ? null : (brokerStatus.connected && brokerStatus.token_valid !== false)}
+            markers={chartMarkers}
           />
         </div>
 

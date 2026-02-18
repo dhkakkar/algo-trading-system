@@ -48,6 +48,14 @@ export interface VolumeData {
   color: string;
 }
 
+export interface ChartMarker {
+  time: string;
+  position: "aboveBar" | "belowBar";
+  color: string;
+  shape: "arrowUp" | "arrowDown" | "circle";
+  text: string;
+}
+
 // ---------------------------------------------------------------------------
 // Indicator Colors
 // ---------------------------------------------------------------------------

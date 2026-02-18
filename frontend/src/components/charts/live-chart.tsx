@@ -17,6 +17,7 @@ import {
   DEFAULT_INDICATORS,
   CandleData,
   VolumeData,
+  ChartMarker,
   IndicatorPanel,
   applyIndicators,
 } from "./chart-indicators";
@@ -66,12 +67,14 @@ export default function LiveChart({
   snapshot,
   isRunning,
   brokerConnected,
+  markers = [],
 }: {
   instruments: string[];
   sessionTimeframe: string;
   snapshot: TradingSnapshot | null;
   isRunning: boolean;
   brokerConnected: boolean | null;
+  markers?: ChartMarker[];
 }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
@@ -345,8 +348,17 @@ export default function LiveChart({
   useEffect(() => {
     if (!snapshot || !candleSeriesRef.current || !sym) return;
 
-    const price = snapshot.prices[sym] || snapshot.prices[sym.toUpperCase()];
-    if (!price) return;
+    const prices = snapshot.prices || {};
+    let price: number | undefined = prices[sym] ?? prices[sym.toUpperCase()];
+    if (price == null) {
+      // Fuzzy match: try trimmed uppercase key comparison
+      const trimmed = sym.trim().toUpperCase();
+      const match = Object.entries(prices).find(
+        ([k]) => k.trim().toUpperCase() === trimmed
+      );
+      if (match) price = match[1];
+    }
+    if (price == null) return;
 
     const isDaily = chartTimeframe === "1d";
     const now = Math.floor(Date.now() / 1000) + timezoneOffset;
@@ -396,6 +408,56 @@ export default function LiveChart({
       }
     }
   }, [snapshot, sym, chartTimeframe, timezoneOffset, indicators]);
+
+  // Apply trade signal markers
+  const appliedMarkersRef = useRef<string>("");
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
+    if (!markers || markers.length === 0) {
+      if (appliedMarkersRef.current !== "") {
+        candleSeriesRef.current.setMarkers([]);
+        appliedMarkersRef.current = "";
+      }
+      return;
+    }
+
+    // Skip if markers haven't changed (compare serialized)
+    const markersKey = JSON.stringify(markers);
+    if (markersKey === appliedMarkersRef.current) return;
+
+    const isDaily = chartTimeframe === "1d";
+    const candles = rawCandlesRef.current;
+
+    // Build sorted candle time array for snapping
+    const candleTimes = candles.map((c) => c.time);
+
+    // Snap a chart time to the nearest candle time <= target
+    const snapToCandle = (chartTime: any): any => {
+      if (candleTimes.length === 0) return chartTime;
+      let closest = candleTimes[0];
+      for (const t of candleTimes) {
+        if (t <= chartTime) closest = t;
+        else break;
+      }
+      return closest;
+    };
+
+    const lwMarkers = markers
+      .map((m) => {
+        const rawTime = toChartTime(m.time, isDaily, timezoneOffset);
+        return {
+          time: snapToCandle(rawTime),
+          position: m.position,
+          color: m.color,
+          shape: m.shape,
+          text: m.text,
+        };
+      })
+      .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+
+    candleSeriesRef.current.setMarkers(lwMarkers);
+    appliedMarkersRef.current = markersKey;
+  }, [markers, chartTimeframe, timezoneOffset, snapshot]);
 
   // Broker invalid overlay
   if (brokerConnected === false) {
