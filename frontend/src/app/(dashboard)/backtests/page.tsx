@@ -138,6 +138,9 @@ export default function BacktestsPage() {
                 <thead>
                   <tr className="border-b text-left">
                     <th className="pb-3 font-medium text-muted-foreground">
+                      Strategy
+                    </th>
+                    <th className="pb-3 font-medium text-muted-foreground">
                       Status
                     </th>
                     <th className="pb-3 font-medium text-muted-foreground">
@@ -168,6 +171,14 @@ export default function BacktestsPage() {
                     const prog = progress[bt.id];
                     return (
                       <tr key={bt.id} className="border-b last:border-0">
+                        <td className="py-3">
+                          <div className="font-medium text-xs">
+                            {bt.strategy_name || bt.strategy_id.slice(0, 8)}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {new Date(bt.created_at).toLocaleDateString()} {new Date(bt.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                        </td>
                         <td className="py-3">
                           <StatusBadge status={bt.status} />
                           {bt.status === "running" && prog && (

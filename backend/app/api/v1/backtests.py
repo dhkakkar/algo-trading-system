@@ -15,8 +15,23 @@ async def list_backtests(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import select
+    from app.models.strategy import Strategy
+
     backtests = await backtest_service.get_backtests(db, current_user.id)
-    return backtests
+    strategy_ids = list({b.strategy_id for b in backtests})
+    name_map: dict = {}
+    if strategy_ids:
+        result = await db.execute(
+            select(Strategy.id, Strategy.name).where(Strategy.id.in_(strategy_ids))
+        )
+        name_map = {row.id: row.name for row in result.all()}
+    responses = []
+    for b in backtests:
+        resp = BacktestListResponse.model_validate(b)
+        resp.strategy_name = name_map.get(b.strategy_id)
+        responses.append(resp)
+    return responses
 
 
 @router.post("", response_model=BacktestResponse, status_code=201)

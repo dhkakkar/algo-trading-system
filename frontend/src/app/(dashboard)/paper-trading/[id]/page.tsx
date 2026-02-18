@@ -19,6 +19,9 @@ import {
   BarChart3,
   AlertTriangle,
   ExternalLink,
+  Edit2,
+  X,
+  Check,
 } from "lucide-react";
 import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
 import apiClient from "@/lib/api-client";
@@ -118,6 +121,13 @@ export default function PaperTradingDetailPage() {
   const [tradesLoading, setTradesLoading] = useState(false);
   const [logs, setLogs] = useState<any[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
+
+  // SL/TP editing state
+  const [editingSLTP, setEditingSLTP] = useState<string | null>(null); // symbol being edited
+  const [editSL, setEditSL] = useState("");
+  const [editTP, setEditTP] = useState("");
+  const [slTpSaving, setSlTpSaving] = useState(false);
+  const [closingPosition, setClosingPosition] = useState<string | null>(null);
 
   // Broker status
   const [brokerStatus, setBrokerStatus] = useState<{
@@ -232,18 +242,21 @@ export default function PaperTradingDetailPage() {
     else if (activeTab === "logs") fetchLogs();
   }, [activeTab, fetchOrders, fetchTrades, fetchLogs]);
 
-  // Fetch trades + logs for chart markers (separate from tab-display fetching)
+  // Fetch orders + trades + logs for chart markers (separate from tab-display fetching)
   const [chartTrades, setChartTrades] = useState<TradingTrade[]>([]);
+  const [chartOrders, setChartOrders] = useState<TradingOrder[]>([]);
   const [chartLogs, setChartLogs] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchForChart = async () => {
       try {
-        const [tradesRes, logsRes] = await Promise.all([
+        const [tradesRes, ordersRes, logsRes] = await Promise.all([
           apiClient.get(`/trading/sessions/${sessionId}/trades`, { _suppressToast: true } as any),
+          apiClient.get(`/trading/sessions/${sessionId}/orders`, { _suppressToast: true } as any),
           apiClient.get(`/trading/sessions/${sessionId}/logs?limit=500`, { _suppressToast: true } as any),
         ]);
         setChartTrades(tradesRes.data || []);
+        setChartOrders(ordersRes.data || []);
         setChartLogs(logsRes.data || []);
       } catch {
         // silently fail — chart markers are supplementary
@@ -257,37 +270,56 @@ export default function PaperTradingDetailPage() {
     }
   }, [sessionId, session?.status]);
 
-  // Build chart markers from trades + logs
+  // Build chart markers from orders + trades + logs
   const chartMarkers = useMemo<ChartMarker[]>(() => {
     const m: ChartMarker[] = [];
 
-    chartTrades.forEach((t, i) => {
-      const isLong = t.side === "LONG" || t.side === "BUY";
-      const tradeNum = i + 1;
-      const sym = (t.tradingsymbol || "").toUpperCase();
+    // Entry/exit markers from filled orders (appear immediately, even while position is open)
+    const filledOrders = chartOrders.filter((o) => o.status === "COMPLETE" && o.filled_at);
+    filledOrders.forEach((order, i) => {
+      const sym = (order.tradingsymbol || "").toUpperCase();
       const optType = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : "";
+      const isBuy = order.transaction_type === "BUY";
+      const orderNum = i + 1;
+      const time = order.filled_at!;
 
-      // Entry marker
-      if (t.entry_at) {
+      // Determine if this is an entry or exit based on order_type
+      // SL/SL-M orders are exits (stop loss hit), plain MARKET/LIMIT on option are entries
+      const isSLOrder = order.order_type === "SL" || order.order_type === "SL-M";
+
+      if (isSLOrder) {
+        // Exit marker (SL hit)
         m.push({
-          time: t.entry_at,
-          position: isLong ? "belowBar" : "aboveBar",
+          time,
+          position: isBuy ? "belowBar" : "aboveBar",
+          color: "#ef4444",
+          shape: isBuy ? "arrowUp" : "arrowDown",
+          text: `Exit${optType ? ` ${optType}` : ""} #${orderNum}`,
+        });
+      } else {
+        // Entry marker
+        m.push({
+          time,
+          position: isBuy ? "belowBar" : "aboveBar",
           color: "#22c55e",
-          shape: isLong ? "arrowUp" : "arrowDown",
+          shape: isBuy ? "arrowUp" : "arrowDown",
           text: optType
-            ? `${isLong ? "Buy" : "Sell"} ${optType} #${tradeNum}`
-            : `#${tradeNum}`,
+            ? `${isBuy ? "Buy" : "Sell"} ${optType} #${orderNum}`
+            : `${isBuy ? "Buy" : "Sell"} #${orderNum}`,
         });
       }
+    });
 
-      // Exit marker
+    // Also add exit markers from completed trades (for TP exits / manual closes that aren't SL)
+    chartTrades.forEach((t, i) => {
       if (t.exit_at) {
+        const isLong = t.side === "LONG" || t.side === "BUY";
         m.push({
           time: t.exit_at,
           position: isLong ? "aboveBar" : "belowBar",
           color: "#ef4444",
           shape: isLong ? "arrowDown" : "arrowUp",
-          text: `Exit #${tradeNum}`,
+          text: `Exit #${i + 1}`,
         });
       }
     });
@@ -315,7 +347,43 @@ export default function PaperTradingDetailPage() {
     });
 
     return m;
-  }, [chartTrades, chartLogs]);
+  }, [chartOrders, chartTrades, chartLogs]);
+
+  const handleClosePosition = async (symbol: string) => {
+    setClosingPosition(symbol);
+    try {
+      await apiClient.post(`/trading/sessions/${sessionId}/close-position`, { symbol });
+      addToast("success", `Close order placed for ${symbol}`);
+      fetchSnapshot(sessionId);
+    } catch (e: any) {
+      addToast("error", e?.response?.data?.detail || "Failed to close position");
+    } finally {
+      setClosingPosition(null);
+    }
+  };
+
+  const handleSaveSLTP = async (symbol: string) => {
+    setSlTpSaving(true);
+    try {
+      const payload: any = { symbol };
+      if (editSL.trim()) payload.sl_price = parseFloat(editSL);
+      if (editTP.trim()) payload.tp_price = parseFloat(editTP);
+      await apiClient.patch(`/trading/sessions/${sessionId}/modify-sl-tp`, payload);
+      addToast("success", "SL/TP updated");
+      setEditingSLTP(null);
+      fetchSnapshot(sessionId);
+    } catch (e: any) {
+      addToast("error", e?.response?.data?.detail || "Failed to update SL/TP");
+    } finally {
+      setSlTpSaving(false);
+    }
+  };
+
+  const startEditSLTP = (pos: any) => {
+    setEditingSLTP(pos.symbol);
+    setEditSL(pos.sl_price != null ? String(pos.sl_price) : "");
+    setEditTP(pos.tp_price != null ? String(pos.tp_price) : "");
+  };
 
   const handleStart = async () => { await startSession(sessionId); fetchSnapshot(sessionId); };
   const handleStop = async () => { await stopSession(sessionId); };
@@ -509,6 +577,51 @@ export default function PaperTradingDetailPage() {
                             {formatCurrency(pos.unrealized_pnl)} ({formatPercent(pos.pnl_percent)})
                           </span>
                         </div>
+                        {/* SL / TP display or edit */}
+                        {editingSLTP === pos.symbol ? (
+                          <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+                            <label className="text-muted-foreground">SL:</label>
+                            <input type="number" step="any" value={editSL} onChange={(e) => setEditSL(e.target.value)}
+                              className="w-20 px-1.5 py-0.5 rounded border bg-background text-xs" placeholder="Price" />
+                            <label className="text-muted-foreground ml-1">TP:</label>
+                            <input type="number" step="any" value={editTP} onChange={(e) => setEditTP(e.target.value)}
+                              className="w-20 px-1.5 py-0.5 rounded border bg-background text-xs" placeholder="Price" />
+                            <button onClick={() => handleSaveSLTP(pos.symbol)} disabled={slTpSaving}
+                              className="p-0.5 rounded hover:bg-green-500/20 text-green-500">
+                              {slTpSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                            </button>
+                            <button onClick={() => setEditingSLTP(null)} className="p-0.5 rounded hover:bg-red-500/20 text-red-400">
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-1.5 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-3">
+                              <span className="text-muted-foreground">
+                                SL: <span className={pos.sl_price != null ? "text-red-400 font-medium" : "opacity-50"}>
+                                  {pos.sl_price != null ? formatCurrency(pos.sl_price) : "—"}
+                                </span>
+                              </span>
+                              <span className="text-muted-foreground">
+                                TP: <span className={pos.tp_price != null ? "text-green-400 font-medium" : "opacity-50"}>
+                                  {pos.tp_price != null ? formatCurrency(pos.tp_price) : "—"}
+                                </span>
+                              </span>
+                              {isRunning && (
+                                <button onClick={() => startEditSLTP(pos)} className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground" title="Edit SL/TP">
+                                  <Edit2 className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
+                            {isRunning && (
+                              <button onClick={() => handleClosePosition(pos.symbol)}
+                                disabled={closingPosition === pos.symbol}
+                                className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50">
+                                {closingPosition === pos.symbol ? "Closing..." : "Close"}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

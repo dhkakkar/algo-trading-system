@@ -358,6 +358,58 @@ async def square_off_session(
     }
 
 
+@router.post("/sessions/{session_id}/close-position")
+async def close_position(
+    session_id: uuid.UUID,
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Close a specific position at market price (paper trading)."""
+    session = await trading_service.get_session(db, session_id, current_user.id)
+    runner = trading_service.get_active_runner(str(session.id))
+    if not runner:
+        raise BadRequestException("Session is not active")
+    symbol = data.get("symbol")
+    if not symbol:
+        raise BadRequestException("symbol is required")
+    if not hasattr(runner, "close_position"):
+        raise BadRequestException("Close position not supported for this session type")
+    order_id = runner.close_position(symbol)
+    if not order_id:
+        raise BadRequestException(f"No open position found for {symbol}")
+    return {"message": f"Close order placed for {symbol}", "order_id": order_id}
+
+
+@router.patch("/sessions/{session_id}/modify-sl-tp")
+async def modify_sl_tp(
+    session_id: uuid.UUID,
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Modify SL and/or TP for an open position (paper trading)."""
+    session = await trading_service.get_session(db, session_id, current_user.id)
+    runner = trading_service.get_active_runner(str(session.id))
+    if not runner:
+        raise BadRequestException("Session is not active")
+    symbol = data.get("symbol")
+    if not symbol:
+        raise BadRequestException("symbol is required")
+    if not hasattr(runner, "modify_sl_tp"):
+        raise BadRequestException("Modify SL/TP not supported for this session type")
+    sl_price = data.get("sl_price")
+    tp_price = data.get("tp_price")
+    if sl_price is not None:
+        sl_price = float(sl_price)
+    if tp_price is not None:
+        tp_price = float(tp_price)
+    result = runner.modify_sl_tp(symbol, sl_price=sl_price, tp_price=tp_price)
+    if "error" in result:
+        raise BadRequestException(result["error"])
+    return {"message": "SL/TP updated", **result}
+
+
 @router.post("/sessions/{session_id}/stop")
 async def stop_session(
     session_id: uuid.UUID,

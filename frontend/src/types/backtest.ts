@@ -34,6 +34,7 @@ export interface Backtest extends BacktestMetrics {
 export interface BacktestListItem {
   id: string;
   strategy_id: string;
+  strategy_name: string | null;
   strategy_version: number;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   start_date: string;

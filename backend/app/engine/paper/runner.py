@@ -381,30 +381,6 @@ class PaperTradingRunner(BaseRunner):
                     cur["low"] = price
                 cur["close"] = price
 
-        # EOD square-off check
-        if self._eod_time:
-            ist_now = datetime.now(IST)
-            now_time = (ist_now.hour, ist_now.minute)
-            today_str = ist_now.strftime("%Y-%m-%d")
-            if now_time >= self._eod_time and self._eod_done_today != today_str:
-                self._eod_done_today = today_str
-                if self.portfolio.positions:
-                    prices = {s: self.broker.get_price(s) or 0 for s in self._tracked_symbols}
-                    closed = self.portfolio.close_all_positions(prices, ist_now)
-                    for pos in closed:
-                        sym = pos.get("symbol", "?")
-                        pnl = pos.get("pnl", 0)
-                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
-                        if self._user_id:
-                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
-                                "symbol": sym, "side": pos.get("side", ""),
-                                "pnl": pnl, "mode": "paper", "reason": "EOD square-off",
-                            })
-                    await self._persist_eod_trades(closed)
-                if self._order_queue:
-                    self.slog.info(f"EOD: cancelled {len(self._order_queue)} pending order(s)", source="runner")
-                    self._order_queue.clear()
-
         # Try to fill pending orders on every tick
         await self._process_orders()
 
@@ -426,6 +402,47 @@ class PaperTradingRunner(BaseRunner):
 
             # Process any new orders placed during on_data
             await self._process_orders()
+
+        # EOD square-off AFTER on_data so strategy has a chance to exit first
+        if self._eod_time:
+            ist_now = datetime.now(IST)
+            now_time = (ist_now.hour, ist_now.minute)
+            today_str = ist_now.strftime("%Y-%m-%d")
+            if now_time >= self._eod_time and self._eod_done_today != today_str:
+                self._eod_done_today = today_str
+                if self.portfolio.positions:
+                    prices = {s: self.broker.get_price(s) or 0 for s in self._tracked_symbols}
+                    closed = self.portfolio.close_all_positions(prices, ist_now)
+                    for pos in closed:
+                        sym = pos.get("symbol", "?")
+                        pnl = pos.get("pnl", 0)
+                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
+                        if self._user_id:
+                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                                "symbol": sym, "side": pos.get("side", ""),
+                                "pnl": pnl, "mode": "paper", "reason": "EOD square-off",
+                            })
+                        # Notify strategy of forced close via on_order_fill
+                        if self._strategy_instance and self._context:
+                            try:
+                                close_side = "BUY" if pos.get("side") == "SHORT" else "SELL"
+                                filled = FilledOrder(
+                                    order_id=f"EOD-{sym}",
+                                    symbol=sym,
+                                    exchange=pos.get("exchange", "NFO"),
+                                    side=close_side,
+                                    quantity=int(pos.get("quantity", 0)),
+                                    fill_price=float(pos.get("exit_price", 0)),
+                                    timestamp=ist_now,
+                                )
+                                self._strategy_instance.on_order_fill(self._context, filled)
+                            except Exception as exc:
+                                self.slog.error(f"EOD on_order_fill error: {exc}", source="runner")
+                    await self._persist_eod_trades(closed)
+                # Cancel ALL pending orders after EOD close
+                if self._order_queue:
+                    self.slog.info(f"EOD: cancelled {len(self._order_queue)} pending order(s)", source="runner")
+                    self._order_queue.clear()
 
         # Invoke update callback (for Socket.IO emission) on every tick
         if self._tick_callback:
@@ -710,25 +727,101 @@ class PaperTradingRunner(BaseRunner):
         for trade in closed_trades:
             await self._persist_trade(trade)
 
+    def _get_pending_sl_tp(self, symbol: str, side: str) -> dict:
+        """Find pending SL and TP orders for a position."""
+        result: dict = {"sl_price": None, "tp_price": None, "sl_order_id": None, "tp_order_id": None}
+        # For SHORT position: SL = pending BUY SL/SL-M, TP = pending BUY LIMIT
+        # For LONG position: SL = pending SELL SL/SL-M, TP = pending SELL LIMIT
+        close_side = "BUY" if side in ("SHORT", "SELL") else "SELL"
+        for order in self._order_queue:
+            if order.status != "pending" or order.symbol != symbol or order.side != close_side:
+                continue
+            if order.order_type in ("SL", "SL-M"):
+                result["sl_price"] = order.trigger_price or order.price
+                result["sl_order_id"] = order.order_id
+            elif order.order_type == "LIMIT":
+                result["tp_price"] = order.price
+                result["tp_order_id"] = order.order_id
+        return result
+
+    def close_position(self, symbol: str) -> str | None:
+        """Close a position by cancelling pending orders and placing a market close."""
+        pos = None
+        for p in self.portfolio.get_all_positions():
+            if p["symbol"] == symbol:
+                pos = p
+                break
+        if not pos:
+            return None
+        # Cancel all pending orders for this symbol
+        self._order_queue = [o for o in self._order_queue if not (o.symbol == symbol and o.status == "pending")]
+        # Place market close order
+        close_side = "BUY" if pos["side"] in ("SHORT", "SELL") else "SELL"
+        order_id = f"PT-{uuid.uuid4().hex[:8]}"
+        order = OrderEvent(
+            timestamp=datetime.now(timezone.utc),
+            symbol=symbol,
+            exchange=pos.get("exchange", "NFO"),
+            side=close_side,
+            quantity=pos["quantity"],
+            order_type="MARKET",
+            order_id=order_id,
+            product="MIS",
+            status="pending",
+        )
+        self._order_queue.append(order)
+        self.slog.info(f"Manual close: {close_side} {symbol} x{pos['quantity']} @ MARKET", source="runner")
+        return order_id
+
+    def modify_sl_tp(self, symbol: str, sl_price: float | None = None, tp_price: float | None = None) -> dict:
+        """Modify SL and/or TP for a position."""
+        pos = None
+        for p in self.portfolio.get_all_positions():
+            if p["symbol"] == symbol:
+                pos = p
+                break
+        if not pos:
+            return {"error": "Position not found"}
+        close_side = "BUY" if pos["side"] in ("SHORT", "SELL") else "SELL"
+        result = {}
+        for order in self._order_queue:
+            if order.status != "pending" or order.symbol != symbol or order.side != close_side:
+                continue
+            if order.order_type in ("SL", "SL-M") and sl_price is not None:
+                old_price = order.trigger_price or order.price
+                order.trigger_price = sl_price
+                order.price = sl_price
+                result["sl_updated"] = True
+                self.slog.info(f"SL modified: {symbol} {old_price} -> {sl_price}", source="runner")
+            elif order.order_type == "LIMIT" and tp_price is not None:
+                old_price = order.price
+                order.price = tp_price
+                result["tp_updated"] = True
+                self.slog.info(f"TP modified: {symbol} {old_price} -> {tp_price}", source="runner")
+        return result
+
     def get_state_snapshot(self) -> dict:
         """Return current state for Socket.IO emission."""
         prices = {s: self.broker.get_price(s) or 0 for s in self._tracked_symbols}
         positions = self._context.get_positions() if self._context else []
+        pos_list = []
+        for p in positions:
+            sl_tp = self._get_pending_sl_tp(p.symbol, p.side)
+            pos_list.append({
+                "symbol": p.symbol, "exchange": p.exchange, "side": p.side,
+                "quantity": p.quantity, "avg_price": p.average_entry_price,
+                "current_price": p.current_price,
+                "unrealized_pnl": p.unrealized_pnl, "pnl_percent": p.pnl_percent,
+                "sl_price": sl_tp["sl_price"], "tp_price": sl_tp["tp_price"],
+                "sl_order_id": sl_tp["sl_order_id"], "tp_order_id": sl_tp["tp_order_id"],
+            })
         return {
             "session_id": self.session_id,
             "status": "running" if self._running and not self._paused else ("paused" if self._paused else "stopped"),
             "portfolio_value": round(self.portfolio.get_portfolio_value(prices), 2),
             "cash": round(self.portfolio.cash, 2),
             "total_pnl": round(self.portfolio.get_portfolio_value(prices) - float(self._config.get("initial_capital", 100000)), 2),
-            "positions": [
-                {
-                    "symbol": p.symbol, "exchange": p.exchange, "side": p.side,
-                    "quantity": p.quantity, "avg_price": p.average_entry_price,
-                    "current_price": p.current_price,
-                    "unrealized_pnl": p.unrealized_pnl, "pnl_percent": p.pnl_percent,
-                }
-                for p in positions
-            ],
+            "positions": pos_list,
             "open_orders": len(self._order_queue),
             "total_trades": len(self.portfolio.trades),
             "total_charges": round(self.portfolio.total_charges, 2),

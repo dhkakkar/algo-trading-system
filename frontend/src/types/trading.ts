@@ -64,6 +64,10 @@ export interface TradingPosition {
   current_price: number;
   unrealized_pnl: number;
   pnl_percent: number;
+  sl_price: number | null;
+  tp_price: number | null;
+  sl_order_id: string | null;
+  tp_order_id: string | null;
 }
 
 export interface TradingOrder {
