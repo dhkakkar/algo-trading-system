@@ -215,6 +215,9 @@ class LiveTradingRunner(BaseRunner):
         self._tick_callback: Optional[Any] = None
         self._logs: list[str] = []
         self.slog = SessionLogger(session_id, db_session_factory)
+        self._db_session_factory = db_session_factory
+        self.run_id: str | None = None  # Set by trading.py when a SessionRun is created
+        self._last_equity_record: datetime | None = None
 
         # EOD square-off + time locks from parameters
         params = config.get("parameters", {})
@@ -251,34 +254,6 @@ class LiveTradingRunner(BaseRunner):
         self._current_prices.update(data)
         self._tracked_symbols.update(data.keys())
 
-        # EOD square-off check
-        if self._eod_time:
-            ist_now = datetime.now(IST)
-            now_time = (ist_now.hour, ist_now.minute)
-            today_str = ist_now.strftime("%Y-%m-%d")
-            if now_time >= self._eod_time and self._eod_done_today != today_str:
-                self._eod_done_today = today_str
-                if self.portfolio.positions:
-                    closed = self.portfolio.close_all_positions(self._current_prices, ist_now)
-                    for pos in closed:
-                        sym = pos.get("symbol", "?")
-                        pnl = pos.get("pnl", 0)
-                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
-                        if self._user_id:
-                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
-                                "symbol": sym, "side": pos.get("side", ""),
-                                "pnl": pnl, "mode": "live", "reason": "EOD square-off",
-                            })
-                # Also try to cancel pending broker orders
-                if self._pending_broker_orders:
-                    self.slog.info(f"EOD: cancelling {len(self._pending_broker_orders)} pending broker order(s)", source="runner")
-                    for oid in list(self._pending_broker_orders.keys()):
-                        try:
-                            self.executor.cancel_order(oid)
-                        except Exception:
-                            pass
-                    self._pending_broker_orders.clear()
-
         # Check pending order statuses
         await self._check_order_statuses()
 
@@ -296,6 +271,57 @@ class LiveTradingRunner(BaseRunner):
                         "error": f"{type(exc).__name__}: {exc}",
                         "mode": "live",
                     })
+
+        # EOD square-off AFTER on_data so strategy has a chance to exit first
+        if self._eod_time:
+            ist_now = datetime.now(IST)
+            now_time = (ist_now.hour, ist_now.minute)
+            today_str = ist_now.strftime("%Y-%m-%d")
+            if now_time >= self._eod_time and self._eod_done_today != today_str:
+                self._eod_done_today = today_str
+                if self.portfolio.positions:
+                    closed = self.portfolio.close_all_positions(self._current_prices, ist_now)
+                    for pos in closed:
+                        sym = pos.get("symbol", "?")
+                        pnl = pos.get("pnl", 0)
+                        self.slog.info(f"EOD square-off: closed {sym} — P&L: {pnl:.2f}", source="runner")
+                        if self._user_id:
+                            fire_notification(self._user_id, NotificationEventType.POSITION_CLOSED, {
+                                "symbol": sym, "side": pos.get("side", ""),
+                                "pnl": pnl, "mode": "live", "reason": "EOD square-off",
+                            })
+                        # Notify strategy of forced close via on_order_fill
+                        if self._strategy_instance and self._context:
+                            try:
+                                close_side = "BUY" if pos.get("side") == "SHORT" else "SELL"
+                                filled = FilledOrder(
+                                    order_id=f"EOD-{sym}",
+                                    symbol=sym,
+                                    exchange=pos.get("exchange", "NFO"),
+                                    side=close_side,
+                                    quantity=int(pos.get("quantity", 0)),
+                                    fill_price=float(pos.get("exit_price", 0)),
+                                    timestamp=ist_now,
+                                )
+                                self._strategy_instance.on_order_fill(self._context, filled)
+                            except Exception as exc:
+                                self.slog.error(f"EOD on_order_fill error: {exc}", source="runner")
+                    await self._persist_eod_trades(closed)
+                # Also try to cancel pending broker orders
+                if self._pending_broker_orders:
+                    self.slog.info(f"EOD: cancelling {len(self._pending_broker_orders)} pending broker order(s)", source="runner")
+                    for oid in list(self._pending_broker_orders.keys()):
+                        try:
+                            self.executor.cancel_order(oid)
+                        except Exception:
+                            pass
+                    self._pending_broker_orders.clear()
+
+        # Record equity point periodically (every 60 seconds) for run report
+        now_eq = datetime.now(IST)
+        if self._last_equity_record is None or (now_eq - self._last_equity_record).total_seconds() >= 60:
+            self._last_equity_record = now_eq
+            self.portfolio.record_equity(now_eq, dict(self._current_prices))
 
         # Update risk manager
         self.risk_manager.update_position_count(len(self.portfolio.get_all_positions()))
@@ -409,6 +435,11 @@ class LiveTradingRunner(BaseRunner):
                 completed_trade = self.portfolio.update_on_fill(fill)
                 completed_ids.append(order_id)
 
+                # Persist to DB
+                await self._persist_fill(info, fill, order_id)
+                if completed_trade:
+                    await self._persist_trade(completed_trade)
+
                 # Fire notifications
                 if self._user_id:
                     fire_notification(self._user_id, NotificationEventType.ORDER_FILLED, {
@@ -468,6 +499,83 @@ class LiveTradingRunner(BaseRunner):
 
         for oid in completed_ids:
             self._pending_broker_orders.pop(oid, None)
+
+    async def _persist_fill(self, order_info: dict, fill, broker_order_id: str):
+        """Persist a filled order to the database."""
+        if not self._db_session_factory or not self._user_id:
+            return
+        try:
+            from app.models.order import Order as OrderModel
+            async with self._db_session_factory() as db:
+                db_order = OrderModel(
+                    user_id=self._user_id,
+                    trading_session_id=uuid.UUID(self.session_id),
+                    session_run_id=uuid.UUID(self.run_id) if self.run_id else None,
+                    broker_order_id=broker_order_id,
+                    tradingsymbol=fill.symbol,
+                    exchange=fill.exchange,
+                    transaction_type=fill.side,
+                    order_type=order_info.get("order_type", "MARKET"),
+                    product=order_info.get("product", "MIS"),
+                    quantity=fill.quantity,
+                    price=order_info.get("price"),
+                    filled_quantity=fill.quantity,
+                    average_price=fill.fill_price,
+                    status="COMPLETE",
+                    mode="live",
+                    placed_at=fill.timestamp,
+                    filled_at=fill.timestamp,
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(db_order)
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to persist live order: %s", exc)
+
+    async def _persist_trade(self, trade: dict):
+        """Persist a completed trade to the database."""
+        if not self._db_session_factory or not self._user_id:
+            return
+        try:
+            from app.models.trade import Trade as TradeModel
+            from dateutil.parser import parse as parse_dt
+
+            entry_at = trade.get("entry_at")
+            if isinstance(entry_at, str):
+                entry_at = parse_dt(entry_at)
+            exit_at = trade.get("exit_at")
+            if isinstance(exit_at, str):
+                exit_at = parse_dt(exit_at)
+
+            async with self._db_session_factory() as db:
+                db_trade = TradeModel(
+                    user_id=self._user_id,
+                    trading_session_id=uuid.UUID(self.session_id),
+                    session_run_id=uuid.UUID(self.run_id) if self.run_id else None,
+                    tradingsymbol=trade["symbol"],
+                    exchange=trade.get("exchange", "NSE"),
+                    side=trade["side"],
+                    quantity=int(trade["quantity"]),
+                    entry_price=float(trade["entry_price"]),
+                    exit_price=float(trade["exit_price"]) if trade.get("exit_price") else None,
+                    pnl=float(trade["pnl"]) if trade.get("pnl") is not None else None,
+                    pnl_percent=float(trade["pnl_percent"]) if trade.get("pnl_percent") is not None else None,
+                    charges=float(trade.get("charges", 0)),
+                    net_pnl=float(trade["net_pnl"]) if trade.get("net_pnl") is not None else None,
+                    mode="live",
+                    entry_at=entry_at,
+                    exit_at=exit_at,
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(db_trade)
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to persist live trade: %s", exc)
+
+    async def _persist_eod_trades(self, closed_trades: list[dict]):
+        """Persist EOD square-off trades to the database."""
+        for trade in closed_trades:
+            await self._persist_trade(trade)
 
     def get_state_snapshot(self) -> dict:
         positions = self._context.get_positions() if self._context else []

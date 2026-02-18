@@ -101,3 +101,48 @@ class TradeResponse(BaseModel):
     exit_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class SessionRunListResponse(BaseModel):
+    id: uuid.UUID
+    trading_session_id: uuid.UUID
+    run_number: int
+    status: str
+    initial_capital: float
+    final_capital: float | None
+    total_return: float | None
+    total_trades: int | None
+    win_rate: float | None
+    profit_factor: float | None
+    max_drawdown: float | None
+    started_at: datetime
+    stopped_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class SessionRunResponse(BaseModel):
+    id: uuid.UUID
+    trading_session_id: uuid.UUID
+    run_number: int
+    status: str
+    initial_capital: float
+    final_capital: float | None
+    total_return: float | None
+    cagr: float | None
+    sharpe_ratio: float | None
+    sortino_ratio: float | None
+    max_drawdown: float | None
+    win_rate: float | None
+    profit_factor: float | None
+    total_trades: int | None
+    avg_trade_pnl: float | None
+    equity_curve: list | None
+    drawdown_curve: list | None
+    error_message: str | None
+    started_at: datetime
+    stopped_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

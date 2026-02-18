@@ -103,3 +103,31 @@ export interface TradingTrade {
   entry_at: string;
   exit_at: string | null;
 }
+
+export interface SessionRunListItem {
+  id: string;
+  trading_session_id: string;
+  run_number: number;
+  status: "running" | "completed" | "error";
+  initial_capital: number;
+  final_capital: number | null;
+  total_return: number | null;
+  total_trades: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  max_drawdown: number | null;
+  started_at: string;
+  stopped_at: string | null;
+}
+
+export interface SessionRun extends SessionRunListItem {
+  cagr: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  avg_trade_pnl: number | null;
+  equity_curve: { timestamp: string; equity: number }[] | null;
+  drawdown_curve: { timestamp: string; drawdown_percent: number }[] | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}

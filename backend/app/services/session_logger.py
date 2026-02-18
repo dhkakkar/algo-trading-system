@@ -23,6 +23,7 @@ class SessionLogger:
 
     def __init__(self, session_id: str, db_session_factory=None):
         self.session_id = session_id
+        self.run_id: str | None = None  # Set by trading.py when a SessionRun is created
         self._db_factory = db_session_factory
         self._buffer: list[dict] = []
         self._python_logger = logging.getLogger(f"session.{session_id[:8]}")
@@ -66,6 +67,7 @@ class SessionLogger:
             async with self._db_factory() as db:
                 log_entry = SessionLog(
                     trading_session_id=UUID(self.session_id),
+                    session_run_id=UUID(self.run_id) if self.run_id else None,
                     level=entry["level"],
                     source=entry["source"],
                     message=entry["message"],

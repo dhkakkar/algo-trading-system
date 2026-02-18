@@ -9,6 +9,7 @@ from app.models.user import User
 from app.schemas.trading import (
     TradingSessionCreate, TradingSessionResponse, TradingSessionListResponse,
     OrderResponse, PositionResponse, TradeResponse,
+    SessionRunListResponse, SessionRunResponse,
 )
 from app.services import trading_service
 from app.exceptions import BadRequestException
@@ -198,6 +199,12 @@ async def start_session(
             await emit_trading_update(str(current_user.id), "trading_update", snapshot)
 
         await runner.start(tick_callback=on_tick_update)
+
+        # Create a SessionRun for this start/stop cycle
+        run = await trading_service.create_run(db, session.id, float(session.initial_capital))
+        runner.run_id = str(run.id)
+        runner.slog.run_id = str(run.id)
+
         trading_service.register_runner(str(session.id), runner)
 
         # Start the Kite ticker for live data
@@ -266,6 +273,7 @@ async def start_session(
 
         from app.engine.live.runner import LiveTradingRunner
         from app.websocket.server import emit_trading_update
+        from app.db.session import async_session_factory
 
         config = {
             "initial_capital": float(session.initial_capital),
@@ -284,6 +292,12 @@ async def start_session(
             await emit_trading_update(str(current_user.id), "trading_update", snapshot)
 
         await runner.start(tick_callback=on_tick_update)
+
+        # Create a SessionRun for this start/stop cycle
+        run = await trading_service.create_run(db, session.id, float(session.initial_capital))
+        runner.run_id = str(run.id)
+        runner.slog.run_id = str(run.id)
+
         trading_service.register_runner(str(session.id), runner)
 
         # Start the Kite ticker
@@ -432,6 +446,21 @@ async def stop_session(
             final_value = runner.portfolio.get_portfolio_value(prices)
         except Exception:
             final_value = None
+
+        # Complete the SessionRun with metrics
+        if runner.run_id:
+            try:
+                await trading_service.complete_run(
+                    db,
+                    uuid.UUID(runner.run_id),
+                    runner.portfolio.equity_curve,
+                    runner.portfolio.trades,
+                    final_value or float(session.initial_capital),
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Failed to complete run: %s", exc)
+
         await trading_service.update_session_status(
             db, session_id, "stopped", current_capital=final_value
         )
@@ -572,6 +601,78 @@ async def get_session_logs(
     logs = list(result.scalars().all())
     logs.reverse()  # Return in chronological order
 
+    return [
+        {
+            "id": str(log.id),
+            "timestamp": log.created_at.isoformat(),
+            "level": log.level,
+            "source": log.source,
+            "message": log.message,
+        }
+        for log in logs
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Session Run endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/sessions/{session_id}/runs", response_model=list[SessionRunListResponse])
+async def list_session_runs(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all runs for a trading session."""
+    await trading_service.get_session(db, session_id, current_user.id)
+    return await trading_service.get_session_runs(db, session_id)
+
+
+@router.get("/sessions/{session_id}/runs/{run_id}", response_model=SessionRunResponse)
+async def get_session_run(
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get full details for a specific run."""
+    return await trading_service.get_run(db, run_id, current_user.id)
+
+
+@router.get("/sessions/{session_id}/runs/{run_id}/trades", response_model=list[TradeResponse])
+async def get_run_trades(
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get trades for a specific run."""
+    await trading_service.get_run(db, run_id, current_user.id)
+    return await trading_service.get_run_trades(db, run_id)
+
+
+@router.get("/sessions/{session_id}/runs/{run_id}/orders", response_model=list[OrderResponse])
+async def get_run_orders(
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get orders for a specific run."""
+    await trading_service.get_run(db, run_id, current_user.id)
+    return await trading_service.get_run_orders(db, run_id)
+
+
+@router.get("/sessions/{session_id}/runs/{run_id}/logs")
+async def get_run_logs(
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get logs for a specific run."""
+    await trading_service.get_run(db, run_id, current_user.id)
+    logs = await trading_service.get_run_logs(db, run_id)
     return [
         {
             "id": str(log.id),

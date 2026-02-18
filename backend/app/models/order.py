@@ -18,6 +18,9 @@ class Order(Base, UUIDMixin):
     backtest_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("backtests.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    session_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("session_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     broker_order_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     instrument_token: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -42,3 +45,4 @@ class Order(Base, UUIDMixin):
     user = relationship("User", back_populates="orders")
     trading_session = relationship("TradingSession", back_populates="orders")
     backtest = relationship("Backtest", back_populates="orders")
+    session_run = relationship("SessionRun", back_populates="orders")

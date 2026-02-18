@@ -22,7 +22,7 @@ import {
   AlertTriangle,
   ShieldAlert,
 } from "lucide-react";
-import type { TradingOrder, TradingTrade, TradingSnapshot } from "@/types/trading";
+import type { TradingOrder, TradingTrade, TradingSnapshot, SessionRunListItem } from "@/types/trading";
 import apiClient from "@/lib/api-client";
 import { useToastStore } from "@/stores/toast-store";
 import { ExternalLink } from "lucide-react";
@@ -102,7 +102,7 @@ export default function LiveTradingDetailPage() {
 
   const addToast = useToastStore((s) => s.addToast);
 
-  const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades" | "logs">(
+  const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades" | "logs" | "runs">(
     "positions"
   );
   const [orders, setOrders] = useState<TradingOrder[]>([]);
@@ -111,6 +111,8 @@ export default function LiveTradingDetailPage() {
   const [logs, setLogs] = useState<any[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [tradesLoading, setTradesLoading] = useState(false);
+  const [runs, setRuns] = useState<SessionRunListItem[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [squareOffLoading, setSquareOffLoading] = useState(false);
   const [showSquareOffConfirm, setShowSquareOffConfirm] = useState(false);
 
@@ -225,6 +227,18 @@ export default function LiveTradingDetailPage() {
     }
   }, [sessionId]);
 
+  const fetchRuns = useCallback(async () => {
+    setRunsLoading(true);
+    try {
+      const res = await apiClient.get(`/trading/sessions/${sessionId}/runs`);
+      setRuns(res.data);
+    } catch {
+      setRuns([]);
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     if (activeTab === "orders") {
       fetchOrders();
@@ -232,8 +246,10 @@ export default function LiveTradingDetailPage() {
       fetchTrades();
     } else if (activeTab === "logs") {
       fetchLogs();
+    } else if (activeTab === "runs") {
+      fetchRuns();
     }
-  }, [activeTab, fetchOrders, fetchTrades, fetchLogs]);
+  }, [activeTab, fetchOrders, fetchTrades, fetchLogs, fetchRuns]);
 
   const handleStart = async () => {
     await startSession(sessionId);
@@ -614,7 +630,7 @@ export default function LiveTradingDetailPage() {
           {/* Tab Navigation */}
           <div className="border-b flex-shrink-0">
             <nav className="flex">
-              {(["positions", "orders", "trades", "logs"] as const).map((tab) => (
+              {(["positions", "orders", "trades", "logs", "runs"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -753,6 +769,57 @@ export default function LiveTradingDetailPage() {
                   )}>{log.level}</span>
                   <span className="text-[10px] px-1 rounded bg-accent/50 shrink-0">{log.source}</span>
                   <span className="break-all">{log.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "runs" && (
+        <div className="p-2">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-muted-foreground">{runs.length} run(s)</span>
+            <button onClick={fetchRuns} className="text-xs text-primary hover:underline">Refresh</button>
+          </div>
+          {runsLoading ? (
+            <div className="h-32 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+          ) : runs.length === 0 ? (
+            <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">No runs yet. Start and stop the session to create a run.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {runs.map((run) => (
+                <div
+                  key={run.id}
+                  className="border rounded-md p-2.5 text-sm hover:bg-accent/30 cursor-pointer transition-colors"
+                  onClick={() => router.push(`/live-trading/${sessionId}/runs/${run.id}`)}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">Run #{run.run_number}</span>
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                        run.status === "completed" ? "bg-green-100 text-green-800" :
+                        run.status === "running" ? "bg-blue-100 text-blue-800" :
+                        "bg-red-100 text-red-800"
+                      )}>{run.status}</span>
+                    </div>
+                    <span className="text-xs text-primary hover:underline">View Report</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>
+                      {new Date(run.started_at).toLocaleDateString("en-IN", { month: "short", day: "2-digit" })}
+                      {run.stopped_at && ` - ${new Date(run.stopped_at).toLocaleDateString("en-IN", { month: "short", day: "2-digit" })}`}
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <span>{run.total_trades ?? 0} trades</span>
+                      {run.total_return != null && (
+                        <span className={cn("font-medium", run.total_return >= 0 ? "text-green-600" : "text-red-600")}>
+                          {(run.total_return * 100).toFixed(2)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

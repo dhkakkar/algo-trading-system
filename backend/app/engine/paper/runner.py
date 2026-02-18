@@ -298,6 +298,7 @@ class PaperTradingRunner(BaseRunner):
         self._expiry_cache: list = []  # sorted list of expiry dates
         self._option_chain_cache: list[dict] = []  # option instrument dicts
         self._kite_client: Any = None  # Set by trading.py for on-demand LTP lookups
+        self.run_id: str | None = None  # Set by trading.py when a SessionRun is created
 
         self._running = False
         self._paused = False
@@ -473,6 +474,10 @@ class PaperTradingRunner(BaseRunner):
         msg = f"Bar {symbol}: O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} C={bar['close']:.2f}"
         logger.info(msg)
         self.slog.info(msg, source="runner")
+
+        # Record equity point for run report
+        prices = {s: self.broker.get_price(s) or 0 for s in self._tracked_symbols}
+        self.portfolio.record_equity(ts, prices)
 
     async def place_order(self, symbol: str, exchange: str, side: str, quantity: int,
                           order_type: str = "MARKET", price: float | None = None,
@@ -662,6 +667,7 @@ class PaperTradingRunner(BaseRunner):
                 db_order = OrderModel(
                     user_id=self._user_id,
                     trading_session_id=uuid.UUID(self.session_id),
+                    session_run_id=uuid.UUID(self.run_id) if self.run_id else None,
                     broker_order_id=fill.order_id,
                     tradingsymbol=fill.symbol,
                     exchange=fill.exchange,
@@ -702,6 +708,7 @@ class PaperTradingRunner(BaseRunner):
                 db_trade = TradeModel(
                     user_id=self._user_id,
                     trading_session_id=uuid.UUID(self.session_id),
+                    session_run_id=uuid.UUID(self.run_id) if self.run_id else None,
                     tradingsymbol=trade["symbol"],
                     exchange=trade.get("exchange", "NSE"),
                     side=trade["side"],

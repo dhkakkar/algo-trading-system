@@ -34,3 +34,4 @@ class TradingSession(Base, UUIDMixin, TimestampMixin):
     trades = relationship("Trade", back_populates="trading_session")
     positions = relationship("Position", back_populates="trading_session", cascade="all, delete-orphan")
     logs = relationship("SessionLog", back_populates="trading_session", cascade="all, delete-orphan", order_by="SessionLog.created_at")
+    runs = relationship("SessionRun", back_populates="trading_session", cascade="all, delete-orphan", order_by="SessionRun.run_number")

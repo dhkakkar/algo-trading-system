@@ -18,6 +18,10 @@ class SessionLog(Base, UUIDMixin, TimestampMixin):
     level: Mapped[str] = mapped_column(String(10), nullable=False, default="INFO")
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="system")
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    session_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("session_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Relationships
     trading_session = relationship("TradingSession", back_populates="logs")
+    session_run = relationship("SessionRun", back_populates="logs")

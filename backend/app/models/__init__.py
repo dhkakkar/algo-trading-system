@@ -11,6 +11,7 @@ from app.models.broker_connection import BrokerConnection
 from app.models.platform_settings import PlatformSettings
 from app.models.notification_settings import NotificationSettings
 from app.models.session_log import SessionLog
+from app.models.session_run import SessionRun
 
 __all__ = [
     "User",
@@ -27,4 +28,5 @@ __all__ = [
     "PlatformSettings",
     "NotificationSettings",
     "SessionLog",
+    "SessionRun",
 ]
