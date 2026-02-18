@@ -1012,22 +1012,25 @@ export default function BacktestDetailPage() {
     return () => { clearInterval(timer); replayTimerRef.current = null; };
   }, [isPlaying, replayMode, replaySpeed, activeTab, updateBTChartToIndex]);
 
-  // Re-apply indicators when config changes in replay mode
+  // Re-apply indicators when config changes (works in both normal and replay mode)
   useEffect(() => {
-    if (!replayMode || !tradeChartObjRef.current || !candleSeriesRefBT.current || !bt) return;
+    if (!tradeChartObjRef.current || !candleSeriesRefBT.current || !bt || chartOHLCVRef.current.length === 0) return;
     const isDaily = bt.timeframe === "1d";
     const parseTime = (timeStr: string) => {
       if (isDaily) return timeStr.slice(0, 10);
       return Math.floor(new Date(timeStr).getTime() / 1000) + 19800;
     };
-    const slice = chartOHLCVRef.current.slice(0, replayIndexRef.current + 1);
-    if (slice.length === 0) return;
-    const candleData = slice.map((bar: any) => ({
+    const data = replayMode
+      ? chartOHLCVRef.current.slice(0, replayIndexRef.current + 1)
+      : chartOHLCVRef.current;
+    if (data.length === 0) return;
+    const candleData = data.map((bar: any) => ({
       time: parseTime(bar.time), open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close),
     }));
-    const sliceVolumes = slice.map((b: any) => Number(b.volume));
-    applyIndicators(tradeChartObjRef.current, candleSeriesRefBT.current, candleData as CandleData[], sliceVolumes, indicators, indicatorSeriesRef);
-  }, [indicators, replayMode, bt]);
+    const volumes = data.map((b: any) => Number(b.volume));
+    applyIndicators(tradeChartObjRef.current, candleSeriesRefBT.current, candleData as CandleData[], volumes, indicators, indicatorSeriesRef);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicators, bt]);
 
   // Exit replay when chart symbol changes
   useEffect(() => {
@@ -1384,7 +1387,7 @@ export default function BacktestDetailPage() {
 
     return () => cleanup?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs]);
+  }, [activeTab, chartOHLCV, trades, chartSymbol, logs]);
 
   if (loading && !bt) {
     return (
