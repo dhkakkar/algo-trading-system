@@ -953,9 +953,8 @@ export default function BacktestDetailPage() {
     setReplayMode(false);
     setIsPlaying(false);
     if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
-    // Restore full chart by re-triggering the chart effect
-    candleSeriesRefBT.current = null;
-    volumeSeriesRefBT.current = null;
+    // Force full chart rebuild by creating a new array reference (triggers the chart useEffect)
+    setChartOHLCV([...chartOHLCVRef.current]);
   }, []);
 
   const stepBTForward = useCallback(() => {
@@ -1036,8 +1035,6 @@ export default function BacktestDetailPage() {
       setReplayMode(false);
       setIsPlaying(false);
       if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
-      candleSeriesRefBT.current = null;
-      volumeSeriesRefBT.current = null;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartSymbol]);
@@ -1386,7 +1383,8 @@ export default function BacktestDetailPage() {
     });
 
     return () => cleanup?.();
-  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs, replayMode]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, chartOHLCV, trades, chartSymbol, indicators, logs]);
 
   if (loading && !bt) {
     return (
