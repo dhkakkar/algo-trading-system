@@ -56,7 +56,7 @@ class NiftyEMACPRStrategy(Strategy):
         target_delta    -- Option |delta| to target (default: 0.4)
         ema_fast        -- Fast EMA period (default: 20)
         ema_slow        -- Slow EMA period (default: 60)
-        tp_per_lot      -- Take profit per lot in INR (default: 2000)
+        tp_per_lot      -- Take profit per lot in INR (default: 3000)
         sl_per_lot      -- Initial stop loss per lot in INR (default: 2000)
         tsl_activation  -- TSL activation profit per lot in INR (default: 1500)
         tsl_lock_pct    -- TSL lock-in percentage (default: 50)
@@ -78,7 +78,7 @@ class NiftyEMACPRStrategy(Strategy):
         self.ema_slow = ctx.get_param("ema_slow", 60)
 
         # --- P&L-based exits (INR per lot) ---
-        self.tp_per_lot = ctx.get_param("tp_per_lot", 2000)
+        self.tp_per_lot = ctx.get_param("tp_per_lot", 3000)
         self.sl_per_lot = ctx.get_param("sl_per_lot", 2000)
         self.tsl_activation = ctx.get_param("tsl_activation", 1500)
         self.tsl_lock_pct = ctx.get_param("tsl_lock_pct", 50)
@@ -268,8 +268,10 @@ class NiftyEMACPRStrategy(Strategy):
         )
 
         # -- Trigger conditions --------------------------------------------
-        bull_cond = cur_close > cur_ema20 and cur_close > cur_ema60 and cur_close > pivot
-        bear_cond = cur_close < cur_ema20 and cur_close < cur_ema60 and cur_close < pivot
+        bull_cond = (cur_close > cur_ema20 and cur_close > cur_ema60
+                     and cur_close > pivot and cur_close > bc and cur_close > tc)
+        bear_cond = (cur_close < cur_ema20 and cur_close < cur_ema60
+                     and cur_close < pivot and cur_close < bc and cur_close < tc)
 
         if self.bullish_trigger or self.bearish_trigger:
             self.bars_since_trigger = self.bars_since_trigger + 1
@@ -303,6 +305,21 @@ class NiftyEMACPRStrategy(Strategy):
                 + " trigLow=" + str(round(cur_low, 2))
                 + " BC=" + str(round(bc, 2))
             )
+
+        # -- Trigger negation (close back below/above any level) ------------
+        if self.bullish_trigger and not self.in_long:
+            if (cur_close < cur_ema20 or cur_close < cur_ema60
+                    or cur_close < pivot or cur_close < bc or cur_close < tc):
+                self.bullish_trigger = False
+                self.trigger_high = None
+                ctx.log("BULL TRIGGER NEGATED | close=" + str(round(cur_close, 2)))
+
+        if self.bearish_trigger and not self.in_short:
+            if (cur_close > cur_ema20 or cur_close > cur_ema60
+                    or cur_close > pivot or cur_close > bc or cur_close > tc):
+                self.bearish_trigger = False
+                self.trigger_low = None
+                ctx.log("BEAR TRIGGER NEGATED | close=" + str(round(cur_close, 2)))
 
         # -- Trigger invalidation (swing) ----------------------------------
         min_bars_for_swing = self.swing_bars * 2 + 1
@@ -373,8 +390,30 @@ class NiftyEMACPRStrategy(Strategy):
         if (self.in_long or self.in_short) and self.entry_premium is not None:
             pnl_per_lot = self.calc_pnl_per_lot(ctx)
 
+            # Level-cross exit (price crossed adverse EMA/CPR level)
+            level_cross_exit = False
+            if self.in_long:
+                if (cur_close < cur_ema20 and cur_close < cur_ema60
+                        and cur_close < pivot and cur_close < bc and cur_close < tc):
+                    level_cross_exit = True
+            elif self.in_short:
+                if (cur_close > cur_ema20 and cur_close > cur_ema60
+                        and cur_close > pivot and cur_close > bc and cur_close > tc):
+                    level_cross_exit = True
+
+            if level_cross_exit:
+                direction = "LONG" if self.in_long else "SHORT"
+                self.exit_held_option(ctx, direction + " Level Cross")
+                ctx.log(direction + " EXIT (Level Cross) | P&L/lot="
+                        + str(round(pnl_per_lot, 2)) + " INR")
+                if self.in_long:
+                    self.block_long = True
+                else:
+                    self.block_short = True
+                self.reset_position()
+
             # Take Profit
-            if pnl_per_lot >= self.tp_per_lot:
+            elif pnl_per_lot >= self.tp_per_lot:
                 direction = "LONG" if self.in_long else "SHORT"
                 self.exit_held_option(ctx, direction + " TP")
                 ctx.log(direction + " EXIT (TP) | P&L/lot=" + str(round(pnl_per_lot, 2)) + " INR")

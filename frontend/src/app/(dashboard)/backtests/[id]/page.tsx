@@ -901,7 +901,11 @@ export default function BacktestDetailPage() {
         logs.forEach((log) => {
           const logMs = new Date(log.timestamp).getTime();
           if (logMs > barMs) return;
-          if (log.message.startsWith("BULL TRIGGER")) {
+          if (log.message.startsWith("BULL TRIGGER NEGATED") || log.message.startsWith("Bull trigger INVALIDATED")) {
+            markers.push({ time: parseTime(log.timestamp), position: "belowBar", color: "#6b7280", shape: "circle", text: "X Bull" });
+          } else if (log.message.startsWith("BEAR TRIGGER NEGATED") || log.message.startsWith("Bear trigger INVALIDATED")) {
+            markers.push({ time: parseTime(log.timestamp), position: "aboveBar", color: "#6b7280", shape: "circle", text: "X Bear" });
+          } else if (log.message.startsWith("BULL TRIGGER")) {
             markers.push({ time: parseTime(log.timestamp), position: "belowBar", color: "#3b82f6", shape: "circle", text: "Bull" });
           } else if (log.message.startsWith("BEAR TRIGGER")) {
             markers.push({ time: parseTime(log.timestamp), position: "aboveBar", color: "#f97316", shape: "circle", text: "Bear" });
@@ -1232,7 +1236,23 @@ export default function BacktestDetailPage() {
       // Trigger markers from logs (only on underlying chart)
       if (isUnderlying && logs.length > 0) {
         logs.forEach((log) => {
-          if (log.message.startsWith("BULL TRIGGER")) {
+          if (log.message.startsWith("BULL TRIGGER NEGATED") || log.message.startsWith("Bull trigger INVALIDATED")) {
+            markers.push({
+              time: parseTime(log.timestamp),
+              position: "belowBar",
+              color: "#6b7280",
+              shape: "circle",
+              text: "X Bull",
+            });
+          } else if (log.message.startsWith("BEAR TRIGGER NEGATED") || log.message.startsWith("Bear trigger INVALIDATED")) {
+            markers.push({
+              time: parseTime(log.timestamp),
+              position: "aboveBar",
+              color: "#6b7280",
+              shape: "circle",
+              text: "X Bear",
+            });
+          } else if (log.message.startsWith("BULL TRIGGER")) {
             markers.push({
               time: parseTime(log.timestamp),
               position: "belowBar",
