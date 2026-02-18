@@ -140,6 +140,7 @@ class PaperTradingContext(TradingContext):
             status="pending",
         )
         self._runner._order_queue.append(order)
+        self._runner._subscribe_option_if_needed(symbol)
         if self._runner.slog:
             self._runner.slog.info(f"BUY order queued: {symbol} x{quantity} @ {price or 'MARKET'}", source="runner")
         return order_id
@@ -166,6 +167,7 @@ class PaperTradingContext(TradingContext):
             status="pending",
         )
         self._runner._order_queue.append(order)
+        self._runner._subscribe_option_if_needed(symbol)
         if self._runner.slog:
             self._runner.slog.info(f"SELL order queued: {symbol} x{quantity} @ {price or 'MARKET'}", source="runner")
         return order_id
@@ -217,6 +219,53 @@ class PaperTradingContext(TradingContext):
             for o in self._runner._order_queue if o.status == "pending"
         ]
 
+    def get_bar_ist_time(self) -> tuple:
+        """Return (hour, minute) of the current bar in IST."""
+        now = datetime.now(IST)
+        return (now.hour, now.minute)
+
+    def get_nearest_expiry(self, underlying: str, ref_date=None):
+        """Return the nearest options expiry from the Instrument table."""
+        cache = getattr(self._runner, "_expiry_cache", None)
+        if cache is None:
+            return None
+        if ref_date is None:
+            ref_date = datetime.now(IST).date()
+        # Find the nearest expiry >= ref_date
+        valid = [e for e in cache if e >= ref_date]
+        return min(valid) if valid else None
+
+    def get_option_chain(self, underlying: str, expiry=None) -> list[dict]:
+        """Return available option instruments for the underlying at given expiry."""
+        chain = getattr(self._runner, "_option_chain_cache", None)
+        if not chain:
+            return []
+        if expiry is None:
+            expiry = self.get_nearest_expiry(underlying)
+        if expiry is None:
+            return []
+        return [o for o in chain if o.get("expiry") == expiry]
+
+    def get_option_price(self, tradingsymbol: str) -> float | None:
+        """Return the current LTP for an option from the broker or Kite API."""
+        price = self._runner.broker.get_price(tradingsymbol)
+        if price is not None:
+            return float(price)
+        # Fallback: use Kite HTTP API for on-demand lookup
+        kite = self._runner._kite_client
+        if kite:
+            try:
+                key = f"NFO:{tradingsymbol}"
+                data = kite.ltp(key)
+                ltp = data.get(key, {}).get("last_price")
+                if ltp is not None:
+                    # Cache it in broker for subsequent lookups
+                    self._runner.broker.update_prices({tradingsymbol: float(ltp)})
+                    return float(ltp)
+            except Exception as exc:
+                logger.warning("Kite LTP lookup failed for %s: %s", tradingsymbol, exc)
+        return None
+
 
 class PaperTradingRunner(BaseRunner):
     """
@@ -246,6 +295,9 @@ class PaperTradingRunner(BaseRunner):
         self._context: Optional[PaperTradingContext] = None
         self._order_queue: list[OrderEvent] = []
         self._historical_cache: dict[str, Any] = {}  # symbol -> DataFrame
+        self._expiry_cache: list = []  # sorted list of expiry dates
+        self._option_chain_cache: list[dict] = []  # option instrument dicts
+        self._kite_client: Any = None  # Set by trading.py for on-demand LTP lookups
 
         self._running = False
         self._paused = False
@@ -494,12 +546,36 @@ class PaperTradingRunner(BaseRunner):
             return df.tail(periods)
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
+    def _subscribe_option_if_needed(self, symbol: str):
+        """Subscribe option token to ticker for live price updates."""
+        if symbol in self._tracked_symbols:
+            return
+        for opt in self._option_chain_cache:
+            if opt["tradingsymbol"] == symbol:
+                self._tracked_symbols.add(symbol)
+                if self._ticker and self._ticker.is_running:
+                    self._ticker.subscribe_tokens([{
+                        "instrument_token": opt["instrument_token"],
+                        "tradingsymbol": symbol,
+                    }])
+                break
+
     async def _process_orders(self):
         """Try to fill all pending orders."""
         still_pending = []
         for order in self._order_queue:
             if order.status != "pending":
                 continue
+            # Fetch option price on-demand if broker has no price
+            if self.broker.get_price(order.symbol) is None and self._kite_client:
+                try:
+                    key = f"NFO:{order.symbol}"
+                    data = await asyncio.to_thread(self._kite_client.ltp, key)
+                    ltp = data.get(key, {}).get("last_price")
+                    if ltp is not None:
+                        self.broker.update_prices({order.symbol: float(ltp)})
+                except Exception:
+                    pass
             fill = self.broker.try_fill_order(order)
             if fill:
                 order.status = "completed"

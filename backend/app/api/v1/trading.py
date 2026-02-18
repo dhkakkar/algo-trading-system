@@ -122,6 +122,7 @@ async def start_session(
             user_id=current_user.id,
             db_session_factory=async_session_factory,
         )
+        runner._kite_client = kite_client  # For on-demand option LTP lookups
 
         # Pre-populate historical data cache from DB
         import pandas as pd
@@ -152,6 +153,46 @@ async def start_session(
                 df.index.name = "timestamp"
                 runner._historical_cache[sym.upper()] = df
 
+        # Populate option chain cache for derivatives (NFO instruments)
+        from app.models.instrument import Instrument
+        underlying_names = set()
+        for symbol_str in session.instruments:
+            sym = symbol_str.split(":")[-1] if ":" in symbol_str else symbol_str
+            name_map = {
+                "NIFTY 50": "NIFTY", "NIFTY BANK": "BANKNIFTY",
+                "NIFTY FIN SERVICE": "FINNIFTY",
+            }
+            underlying_names.add(name_map.get(sym.upper(), sym.upper()))
+
+        if underlying_names:
+            from sqlalchemy import or_
+            name_filters = [Instrument.name == u for u in underlying_names]
+            opt_result = await db.execute(
+                select(Instrument).where(
+                    Instrument.exchange == "NFO",
+                    Instrument.instrument_type.in_(["CE", "PE"]),
+                    or_(*name_filters),
+                    Instrument.expiry != None,
+                )
+            )
+            opt_instruments = list(opt_result.scalars().all())
+            if opt_instruments:
+                runner._option_chain_cache = [
+                    {
+                        "tradingsymbol": inst.tradingsymbol,
+                        "strike": float(inst.strike) if inst.strike else 0,
+                        "option_type": inst.instrument_type,  # CE or PE
+                        "expiry": inst.expiry,
+                        "lot_size": inst.lot_size or 1,
+                        "instrument_token": inst.instrument_token,
+                    }
+                    for inst in opt_instruments
+                ]
+                expiries = sorted(set(
+                    inst.expiry for inst in opt_instruments if inst.expiry
+                ))
+                runner._expiry_cache = expiries
+
         async def on_tick_update(r):
             snapshot = r.get_state_snapshot()
             await emit_trading_update(str(current_user.id), "trading_update", snapshot)
@@ -160,7 +201,6 @@ async def start_session(
         trading_service.register_runner(str(session.id), runner)
 
         # Start the Kite ticker for live data
-        from app.models.instrument import Instrument
         tokens_map = []
         for symbol_str in session.instruments:
             sym = symbol_str.split(":")[-1] if ":" in symbol_str else symbol_str

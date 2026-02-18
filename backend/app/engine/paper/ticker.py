@@ -98,6 +98,24 @@ class KiteTicker:
             if asyncio.iscoroutine(result):
                 await result
 
+    def subscribe_tokens(self, instruments: list[dict]):
+        """Dynamically subscribe to additional instruments at runtime."""
+        new_tokens = []
+        for inst in instruments:
+            token = inst.get("instrument_token")
+            symbol = inst.get("tradingsymbol", "")
+            if token and token not in self._subscribed_tokens:
+                self._subscribed_tokens.append(token)
+                self._token_to_symbol[token] = symbol
+                new_tokens.append(token)
+        if new_tokens and self._ticker:
+            try:
+                self._ticker.subscribe(new_tokens)
+                self._ticker.set_mode(self._ticker.MODE_LTP, new_tokens)
+                logger.info("Dynamically subscribed %d new tokens", len(new_tokens))
+            except Exception as exc:
+                logger.warning("Failed to subscribe new tokens: %s", exc)
+
     def stop(self):
         """Stop the ticker."""
         self._running = False
