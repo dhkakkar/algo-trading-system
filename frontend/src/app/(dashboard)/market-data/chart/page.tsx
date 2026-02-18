@@ -186,6 +186,9 @@ export default function ChartPage() {
   const [replaySpeed, setReplaySpeed] = useState(1);
   const replayIndexRef = useRef(0);
   const replayTimerRef = useRef<number | null>(null);
+  const [showReplayPicker, setShowReplayPicker] = useState(false);
+  const [replayStartDate, setReplayStartDate] = useState("");
+  const [replayStartTime, setReplayStartTime] = useState("09:15");
   const intervalRef = useRef(interval);
   const timezoneOffset = useMemo(() => {
     if (typeof window === "undefined") return 19800;
@@ -466,17 +469,44 @@ export default function ChartPage() {
     }
   }, []);
 
-  const enterReplay = useCallback(() => {
+  const openReplayPicker = useCallback(() => {
     if (dataRef.current.length === 0) return;
+    // Default to the first bar's date
+    const firstBar = dataRef.current[0];
+    const d = new Date(firstBar.time);
+    setReplayStartDate(d.toISOString().slice(0, 10));
+    setReplayStartTime(
+      `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+    );
+    setShowReplayPicker(true);
+  }, []);
+
+  const startReplayFromPicker = useCallback(() => {
+    if (dataRef.current.length === 0) return;
+    setShowReplayPicker(false);
+
+    // Find the bar index closest to the selected datetime
+    const targetStr = `${replayStartDate}T${replayStartTime}:00`;
+    const targetMs = new Date(targetStr).getTime();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < dataRef.current.length; i++) {
+      const barMs = new Date(dataRef.current[i].time).getTime();
+      const diff = Math.abs(barMs - targetMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    }
+
     setReplayMode(true);
     setIsPlaying(false);
     setReplaySpeed(1);
-    setReplayIndex(0);
-    replayIndexRef.current = 0;
+    setReplayIndex(bestIdx);
+    replayIndexRef.current = bestIdx;
     if (replayTimerRef.current !== null) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
-    // Show just the first bar
-    updateChartToIndex(0);
-  }, [updateChartToIndex]);
+    updateChartToIndex(bestIdx);
+  }, [replayStartDate, replayStartTime, updateChartToIndex]);
 
   const exitReplay = useCallback(() => {
     setReplayMode(false);
@@ -698,9 +728,26 @@ export default function ChartPage() {
 
   // Re-apply indicators when config changes
   useEffect(() => {
-    if (!chartRef.current || !candleSeriesRef.current || rawCandlesRef.current.length === 0) return;
-    applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
-  }, [indicators]);
+    if (!chartRef.current || !candleSeriesRef.current) return;
+    if (replayMode) {
+      // In replay mode, apply to sliced data
+      const slice = dataRef.current.slice(0, replayIndexRef.current + 1);
+      if (slice.length === 0) return;
+      const isDaily = intervalRef.current === "1d";
+      const parseTime = (timeStr: string) => {
+        if (isDaily) return timeStr.slice(0, 10);
+        return Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
+      };
+      const candleData = slice.map((bar) => ({
+        time: parseTime(bar.time), open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+      }));
+      const sliceVolumes = slice.map((b) => b.volume);
+      applyIndicators(chartRef.current, candleSeriesRef.current, candleData as CandleData[], sliceVolumes, indicators, indicatorSeriesRef);
+    } else {
+      if (rawCandlesRef.current.length === 0) return;
+      applyIndicators(chartRef.current, candleSeriesRef.current, rawCandlesRef.current, rawVolumesRef.current, indicators, indicatorSeriesRef);
+    }
+  }, [indicators, replayMode, timezoneOffset]);
 
   if (!symbol) {
     return (
@@ -748,7 +795,7 @@ export default function ChartPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={enterReplay}
+            onClick={openReplayPicker}
             className="text-purple-600 border-purple-500/50 hover:bg-purple-500/10"
           >
             <Play className="h-4 w-4 mr-2" />
@@ -837,94 +884,208 @@ export default function ChartPage() {
 
       {/* Controls — replay mode */}
       {replayMode && (
-        <div className="flex items-center gap-3 flex-shrink-0 flex-wrap rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
-          {/* Play/Pause */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={togglePlay}
-          >
-            {isPlaying ? (
-              <Pause className="h-4 w-4" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-          </Button>
-
-          {/* Step forward */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={stepForward}
-            disabled={isPlaying || replayIndex >= data.length - 1}
-          >
-            <SkipForward className="h-4 w-4" />
-          </Button>
-
-          {/* Reset */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={resetReplay}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
-
-          {/* Divider */}
-          <div className="w-px h-6 bg-border" />
-
-          {/* Speed buttons */}
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-muted-foreground mr-1">Speed:</span>
-            {SPEED_OPTIONS.map((s) => (
+        <div className="space-y-2 flex-shrink-0">
+          {/* Chart tools row: indicators + grid */}
+          <div className="flex items-center gap-4 flex-wrap">
+            {/* Indicators button */}
+            <div className="relative">
               <button
-                key={s}
-                onClick={() => setReplaySpeed(s)}
-                className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
-                  replaySpeed === s
-                    ? "bg-purple-600 text-white"
+                onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                  showIndicatorPanel || activeCount > 0
+                    ? "bg-primary/10 text-primary"
                     : "bg-muted text-muted-foreground hover:bg-muted/80"
-                }`}
+                )}
               >
-                {s}x
+                <Settings2 className="h-3.5 w-3.5" />
+                Indicators
+                {activeCount > 0 && (
+                  <span className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded-full leading-none">{activeCount}</span>
+                )}
               </button>
-            ))}
+              {showIndicatorPanel && (
+                <IndicatorPanel config={indicators} onChange={(cfg) => {
+                  setIndicators(cfg);
+                  // Re-apply indicators to replay slice
+                  if (chartRef.current && candleSeriesRef.current) {
+                    const slice = dataRef.current.slice(0, replayIndexRef.current + 1);
+                    const isDaily = intervalRef.current === "1d";
+                    const parseTime = (timeStr: string) => {
+                      if (isDaily) return timeStr.slice(0, 10);
+                      return Math.floor(new Date(timeStr).getTime() / 1000) + timezoneOffset;
+                    };
+                    const candleData = slice.map((bar) => ({
+                      time: parseTime(bar.time),
+                      open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+                    }));
+                    const sliceVolumes = slice.map((b) => b.volume);
+                    // Need to update ref first since applyIndicators uses the ref
+                    indicatorsRef.current = cfg;
+                    applyIndicators(chartRef.current, candleSeriesRef.current, candleData as CandleData[], sliceVolumes, cfg, indicatorSeriesRef);
+                  }
+                }} onClose={() => setShowIndicatorPanel(false)} />
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowGrid(!showGrid)}
+              title={showGrid ? "Hide grid lines" : "Show grid lines"}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                showGrid
+                  ? "bg-primary/10 text-primary"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              )}
+            >
+              <Grid3X3 className="h-3.5 w-3.5" />
+            </button>
           </div>
 
-          {/* Divider */}
-          <div className="w-px h-6 bg-border" />
+          {/* Replay controls row */}
+          <div className="flex items-center gap-3 flex-wrap rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+            {/* Play/Pause */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={togglePlay}
+            >
+              {isPlaying ? (
+                <Pause className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+            </Button>
 
-          {/* Progress slider */}
-          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-            <input
-              type="range"
-              min={0}
-              max={Math.max(data.length - 1, 0)}
-              value={replayIndex}
-              onChange={handleSeek}
-              className="flex-1 h-1.5 accent-purple-600 cursor-pointer"
-            />
-            <span className="text-xs text-muted-foreground font-mono whitespace-nowrap">
-              {replayIndex + 1} / {data.length}
-            </span>
+            {/* Step forward */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={stepForward}
+              disabled={isPlaying || replayIndex >= data.length - 1}
+            >
+              <SkipForward className="h-4 w-4" />
+            </Button>
+
+            {/* Reset */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={resetReplay}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+
+            {/* Divider */}
+            <div className="w-px h-6 bg-border" />
+
+            {/* Speed buttons */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground mr-1">Speed:</span>
+              {SPEED_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setReplaySpeed(s)}
+                  className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                    replaySpeed === s
+                      ? "bg-purple-600 text-white"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+
+            {/* Divider */}
+            <div className="w-px h-6 bg-border" />
+
+            {/* Progress slider */}
+            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+              <input
+                type="range"
+                min={0}
+                max={Math.max(data.length - 1, 0)}
+                value={replayIndex}
+                onChange={handleSeek}
+                className="flex-1 h-1.5 accent-purple-600 cursor-pointer"
+              />
+              <span className="text-xs text-muted-foreground font-mono whitespace-nowrap">
+                {replayIndex + 1} / {data.length}
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div className="w-px h-6 bg-border" />
+
+            {/* Exit replay */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={exitReplay}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Exit Replay
+            </Button>
           </div>
+        </div>
+      )}
 
-          {/* Divider */}
-          <div className="w-px h-6 bg-border" />
-
-          {/* Exit replay */}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={exitReplay}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-3.5 w-3.5 mr-1" />
-            Exit Replay
-          </Button>
+      {/* Replay start picker modal */}
+      {showReplayPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowReplayPicker(false)}>
+          <div className="bg-card border rounded-lg shadow-lg p-6 w-[380px] space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold">Start Replay From</h3>
+            <p className="text-sm text-muted-foreground">
+              Choose where to begin the replay. Data range: {data.length > 0 ? new Date(data[0].time).toLocaleDateString("en-IN") : "—"} to {data.length > 0 ? new Date(data[data.length - 1].time).toLocaleDateString("en-IN") : "—"}
+            </p>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="replay-date" className="text-xs text-muted-foreground">Date</Label>
+                <Input
+                  id="replay-date"
+                  type="date"
+                  value={replayStartDate}
+                  onChange={(e) => setReplayStartDate(e.target.value)}
+                  className="h-9"
+                />
+              </div>
+              {interval !== "1d" && (
+                <div className="w-28 space-y-1">
+                  <Label htmlFor="replay-time" className="text-xs text-muted-foreground">Time</Label>
+                  <Input
+                    id="replay-time"
+                    type="time"
+                    value={replayStartTime}
+                    onChange={(e) => setReplayStartTime(e.target.value)}
+                    className="h-9"
+                  />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowReplayPicker(false)}
+                className="flex-1"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={startReplayFromPicker}
+                className="flex-1 bg-purple-600 hover:bg-purple-700 text-white"
+              >
+                <Play className="h-4 w-4 mr-1" />
+                Start Replay
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
