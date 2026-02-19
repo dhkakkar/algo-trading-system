@@ -342,22 +342,16 @@ export default function PaperTradingDetailPage() {
     // Trigger markers from strategy logs
     chartLogs.forEach((log) => {
       if (!log.timestamp) return;
-      if (log.message?.startsWith("BULL TRIGGER")) {
-        m.push({
-          time: log.timestamp,
-          position: "belowBar",
-          color: "#3b82f6",
-          shape: "circle",
-          text: "Bull",
-        });
+      if (log.message?.startsWith("BULL TRIGGER NEGATED") || log.message?.startsWith("Bull trigger INVALIDATED")) {
+        m.push({ time: log.timestamp, position: "belowBar", color: "#6b7280", shape: "circle", text: "X Bull" });
+      } else if (log.message?.startsWith("BEAR TRIGGER NEGATED") || log.message?.startsWith("Bear trigger INVALIDATED")) {
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#6b7280", shape: "circle", text: "X Bear" });
+      } else if (log.message?.startsWith("BULL TRIGGER")) {
+        m.push({ time: log.timestamp, position: "belowBar", color: "#3b82f6", shape: "circle", text: "Bull" });
       } else if (log.message?.startsWith("BEAR TRIGGER")) {
-        m.push({
-          time: log.timestamp,
-          position: "aboveBar",
-          color: "#f97316",
-          shape: "circle",
-          text: "Bear",
-        });
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#f97316", shape: "circle", text: "Bear" });
+      } else if (log.message?.includes("rejected") || log.message?.startsWith("ORDER REJECTED")) {
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#ef4444", shape: "square", text: "REJECTED" });
       }
     });
 

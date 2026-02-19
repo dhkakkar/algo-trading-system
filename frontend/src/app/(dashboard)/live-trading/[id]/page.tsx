@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useTradingStore } from "@/stores/trading-store";
 import { connectSocket } from "@/lib/socket-client";
@@ -27,6 +27,7 @@ import apiClient from "@/lib/api-client";
 import { useToastStore } from "@/stores/toast-store";
 import { ExternalLink } from "lucide-react";
 import LiveChart from "@/components/charts/live-chart";
+import type { ChartMarker } from "@/components/charts/chart-indicators";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -250,6 +251,82 @@ export default function LiveTradingDetailPage() {
       fetchRuns();
     }
   }, [activeTab, fetchOrders, fetchTrades, fetchLogs, fetchRuns]);
+
+  // Fetch orders + trades + logs for chart markers
+  const [chartTrades, setChartTrades] = useState<TradingTrade[]>([]);
+  const [chartOrders, setChartOrders] = useState<TradingOrder[]>([]);
+  const [chartLogs, setChartLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchForChart = async () => {
+      try {
+        const [tradesRes, ordersRes, logsRes] = await Promise.all([
+          apiClient.get(`/trading/sessions/${sessionId}/trades`, { _suppressToast: true } as any),
+          apiClient.get(`/trading/sessions/${sessionId}/orders`, { _suppressToast: true } as any),
+          apiClient.get(`/trading/sessions/${sessionId}/logs?limit=500`, { _suppressToast: true } as any),
+        ]);
+        setChartTrades(tradesRes.data || []);
+        setChartOrders(ordersRes.data || []);
+        setChartLogs(logsRes.data || []);
+      } catch {
+        // silently fail — chart markers are supplementary
+      }
+    };
+    fetchForChart();
+
+    if (session?.status === "running") {
+      const interval = setInterval(fetchForChart, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [sessionId, session?.status]);
+
+  // Build chart markers from orders + trades + logs
+  const chartMarkers = useMemo<ChartMarker[]>(() => {
+    const m: ChartMarker[] = [];
+
+    // Entry/exit markers from filled orders
+    const filledOrders = chartOrders.filter((o) => o.status === "COMPLETE" && o.filled_at);
+    filledOrders.forEach((order, i) => {
+      const sym = (order.tradingsymbol || "").toUpperCase();
+      const optType = sym.endsWith("CE") ? "CE" : sym.endsWith("PE") ? "PE" : "";
+      const isBuy = order.transaction_type === "BUY";
+      const orderNum = i + 1;
+      const time = order.filled_at!;
+      const isSLOrder = order.order_type === "SL" || order.order_type === "SL-M";
+
+      if (isSLOrder) {
+        m.push({ time, position: isBuy ? "belowBar" : "aboveBar", color: "#ef4444", shape: isBuy ? "arrowUp" : "arrowDown", text: `Exit${optType ? ` ${optType}` : ""} #${orderNum}` });
+      } else {
+        m.push({ time, position: isBuy ? "belowBar" : "aboveBar", color: "#22c55e", shape: isBuy ? "arrowUp" : "arrowDown", text: optType ? `${isBuy ? "Buy" : "Sell"} ${optType} #${orderNum}` : `${isBuy ? "Buy" : "Sell"} #${orderNum}` });
+      }
+    });
+
+    // Exit markers from completed trades
+    chartTrades.forEach((t, i) => {
+      if (t.exit_at) {
+        const isLong = t.side === "LONG" || t.side === "BUY";
+        m.push({ time: t.exit_at, position: isLong ? "aboveBar" : "belowBar", color: "#ef4444", shape: isLong ? "arrowDown" : "arrowUp", text: `Exit #${i + 1}` });
+      }
+    });
+
+    // Trigger markers from strategy logs
+    chartLogs.forEach((log) => {
+      if (!log.timestamp) return;
+      if (log.message?.startsWith("BULL TRIGGER NEGATED") || log.message?.startsWith("Bull trigger INVALIDATED")) {
+        m.push({ time: log.timestamp, position: "belowBar", color: "#6b7280", shape: "circle", text: "X Bull" });
+      } else if (log.message?.startsWith("BEAR TRIGGER NEGATED") || log.message?.startsWith("Bear trigger INVALIDATED")) {
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#6b7280", shape: "circle", text: "X Bear" });
+      } else if (log.message?.startsWith("BULL TRIGGER")) {
+        m.push({ time: log.timestamp, position: "belowBar", color: "#3b82f6", shape: "circle", text: "Bull" });
+      } else if (log.message?.startsWith("BEAR TRIGGER")) {
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#f97316", shape: "circle", text: "Bear" });
+      } else if (log.message?.includes("rejected") || log.message?.startsWith("ORDER REJECTED")) {
+        m.push({ time: log.timestamp, position: "aboveBar", color: "#ef4444", shape: "square", text: "REJECTED" });
+      }
+    });
+
+    return m;
+  }, [chartOrders, chartTrades, chartLogs]);
 
   const handleStart = async () => {
     await startSession(sessionId);
@@ -622,6 +699,7 @@ export default function LiveTradingDetailPage() {
             snapshot={snapshot}
             isRunning={isRunning}
             brokerConnected={brokerStatus === null ? null : (brokerStatus.connected && brokerStatus.token_valid !== false)}
+            markers={chartMarkers}
           />
         </div>
 

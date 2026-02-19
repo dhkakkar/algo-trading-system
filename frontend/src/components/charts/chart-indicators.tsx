@@ -52,7 +52,7 @@ export interface ChartMarker {
   time: string;
   position: "aboveBar" | "belowBar";
   color: string;
-  shape: "arrowUp" | "arrowDown" | "circle";
+  shape: "arrowUp" | "arrowDown" | "circle" | "square";
   text: string;
 }
 
