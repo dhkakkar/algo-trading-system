@@ -932,6 +932,13 @@ export default function BacktestDetailPage() {
     // Update P&L panel data up to current bar (replay mode)
     if (pnlSeriesRefBT.current && logs.length > 0 && currentBarTime) {
       const barMs = new Date(currentBarTime).getTime();
+      // Trade time windows for SL/TP filtering
+      const tradeWindows = trades
+        .filter((t) => t.entry_at && t.exit_at)
+        .map((t) => ({
+          entryMs: new Date(t.entry_at).getTime(),
+          exitMs: new Date(t.exit_at!).getTime(),
+        }));
       const rpnl: any[] = [];
       const rsl: any[] = [];
       const rtp: any[] = [];
@@ -949,8 +956,13 @@ export default function BacktestDetailPage() {
         const sl = parseFloat(parts.sl);
         const tp = parseFloat(parts.tp);
         if (!isNaN(pnl)) rpnl.push({ time: t, value: pnl });
-        if (!isNaN(sl)) rsl.push({ time: t, value: sl });
-        if (!isNaN(tp)) rtp.push({ time: t, value: tp });
+        const inTrade = tradeWindows.some(
+          (w) => logMs >= w.entryMs && logMs <= w.exitMs
+        );
+        if (inTrade) {
+          if (!isNaN(sl)) rsl.push({ time: t, value: sl });
+          if (!isNaN(tp)) rtp.push({ time: t, value: tp });
+        }
       });
       pnlSeriesRefBT.current.setData(rpnl);
       if (slSeriesRefBT.current) slSeriesRefBT.current.setData(rsl);
@@ -1212,14 +1224,31 @@ export default function BacktestDetailPage() {
       candleSeriesRefBT.current = candleSeries;
       volumeSeriesRefBT.current = volumeSeries;
 
+      // Determine if this chart shows an underlying instrument vs an options symbol
+      const rawInstEarly = chartSymbol || bt.instruments?.[0] || "";
+      const parsedEarly = parseInstrument(rawInstEarly);
+      const isUnderlyingChart = (bt.instruments || []).some(
+        (inst) => parseInstrument(inst).symbol.toUpperCase() === parsedEarly.symbol.toUpperCase()
+      );
+
       // P&L panel with SL/TP lines (parsed from PNL_DATA logs)
+      // SL/TP constrained to each trade's entry→exit window and only on option charts
       if (logs.length > 0) {
+        // Build trade time windows [entryMs, exitMs] for filtering
+        const tradeWindows = trades
+          .filter((t) => t.entry_at && t.exit_at)
+          .map((t) => ({
+            entryMs: new Date(t.entry_at).getTime(),
+            exitMs: new Date(t.exit_at!).getTime(),
+          }));
+
         const pnlData: any[] = [];
         const slData: any[] = [];
         const tpData: any[] = [];
         logs.forEach((log) => {
           if (!log.message?.startsWith("PNL_DATA|") || !log.timestamp) return;
           const t = parseTime(log.timestamp);
+          const logMs = new Date(log.timestamp).getTime();
           const parts: Record<string, string> = {};
           log.message.split("|").slice(1).forEach((p: string) => {
             const [k, v] = p.split("=");
@@ -1229,8 +1258,14 @@ export default function BacktestDetailPage() {
           const sl = parseFloat(parts.sl);
           const tp = parseFloat(parts.tp);
           if (!isNaN(pnl)) pnlData.push({ time: t, value: pnl });
-          if (!isNaN(sl)) slData.push({ time: t, value: sl });
-          if (!isNaN(tp)) tpData.push({ time: t, value: tp });
+          // Only include SL/TP within a trade's active window
+          const inTrade = tradeWindows.some(
+            (w) => logMs >= w.entryMs && logMs <= w.exitMs
+          );
+          if (inTrade) {
+            if (!isNaN(sl)) slData.push({ time: t, value: sl });
+            if (!isNaN(tp)) tpData.push({ time: t, value: tp });
+          }
         });
 
         if (pnlData.length > 0) {
@@ -1243,25 +1278,30 @@ export default function BacktestDetailPage() {
           pnlS.setData(pnlData);
           pnlSeriesRefBT.current = pnlS;
 
-          const slS = chart.addLineSeries({
-            color: "#ef4444", lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            priceScaleId: "pnl", lastValueVisible: false,
-            priceLineVisible: false,
-            title: "SL",
-          });
-          slS.setData(slData);
-          slSeriesRefBT.current = slS;
+          // SL/TP only shown on the options chart where the order was placed
+          if (!isUnderlyingChart && slData.length > 0) {
+            const slS = chart.addLineSeries({
+              color: "#ef4444", lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              priceScaleId: "pnl", lastValueVisible: false,
+              priceLineVisible: false,
+              title: "SL",
+            });
+            slS.setData(slData);
+            slSeriesRefBT.current = slS;
+          }
 
-          const tpS = chart.addLineSeries({
-            color: "#22c55e", lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            priceScaleId: "pnl", lastValueVisible: false,
-            priceLineVisible: false,
-            title: "TP",
-          });
-          tpS.setData(tpData);
-          tpSeriesRefBT.current = tpS;
+          if (!isUnderlyingChart && tpData.length > 0) {
+            const tpS = chart.addLineSeries({
+              color: "#22c55e", lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              priceScaleId: "pnl", lastValueVisible: false,
+              priceLineVisible: false,
+              title: "TP",
+            });
+            tpS.setData(tpData);
+            tpSeriesRefBT.current = tpS;
+          }
 
           chart.priceScale("pnl").applyOptions({
             scaleMargins: { top: 0.7, bottom: 0.02 },
@@ -1275,13 +1315,9 @@ export default function BacktestDetailPage() {
       }
 
       // Trade entry/exit markers + connecting lines
-      const rawInst = chartSymbol || bt.instruments?.[0] || "";
-      const parsed = parseInstrument(rawInst);
-
-      // Determine if this chart shows an underlying instrument vs an options symbol
-      const isUnderlying = (bt.instruments || []).some(
-        (inst) => parseInstrument(inst).symbol.toUpperCase() === parsed.symbol.toUpperCase()
-      );
+      const rawInst = rawInstEarly;
+      const parsed = parsedEarly;
+      const isUnderlying = isUnderlyingChart;
 
       // On underlying chart: show ALL trades (they were triggered by this underlying)
       // On options chart: filter to only trades on that specific options symbol
