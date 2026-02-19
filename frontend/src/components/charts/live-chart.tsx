@@ -63,6 +63,12 @@ function toChartTime(timeStr: string, isDaily: boolean, tzOffsetSeconds: number 
 // ---------------------------------------------------------------------------
 // LiveChart Component
 // ---------------------------------------------------------------------------
+export interface SlTpPoint {
+  time: string; // ISO timestamp
+  sl: number;   // premium price level
+  tp: number;   // premium price level
+}
+
 export default function LiveChart({
   instruments,
   sessionTimeframe,
@@ -70,6 +76,7 @@ export default function LiveChart({
   isRunning,
   brokerConnected,
   markers = [],
+  slTpLines = [],
 }: {
   instruments: string[];
   sessionTimeframe: string;
@@ -77,6 +84,7 @@ export default function LiveChart({
   isRunning: boolean;
   brokerConnected: boolean | null;
   markers?: ChartMarker[];
+  slTpLines?: SlTpPoint[];
 }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
@@ -84,6 +92,11 @@ export default function LiveChart({
   const volumeSeriesRef = useRef<any>(null);
   const lastCandleRef = useRef<any>(null);
   const indicatorSeriesRef = useRef<Record<string, any>>({});
+  const slSeriesRef = useRef<any>(null);
+  const tpSeriesRef = useRef<any>(null);
+  const lcModuleRef = useRef<any>(null);
+  const [showSL, setShowSL] = useState(true);
+  const [showTP, setShowTP] = useState(true);
   const rawCandlesRef = useRef<CandleData[]>([]);
   const rawVolumesRef = useRef<number[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
@@ -279,6 +292,9 @@ export default function LiveChart({
         if (!chartContainerRef.current) return;
         if (chartRef.current) { chartRef.current.remove(); chartRef.current = null; }
         indicatorSeriesRef.current = {};
+        slSeriesRef.current = null;
+        tpSeriesRef.current = null;
+        lcModuleRef.current = lc;
 
         const { createChart, ColorType } = lc;
         const isDaily = chartTimeframe === "1d";
@@ -463,6 +479,53 @@ export default function LiveChart({
     appliedMarkersRef.current = markersKey;
   }, [markers, chartTimeframe, timezoneOffset, snapshot]);
 
+  // Apply SL/TP premium price lines
+  useEffect(() => {
+    if (!chartRef.current || !lcModuleRef.current) return;
+    const lc = lcModuleRef.current;
+    const isDaily = chartTimeframe === "1d";
+
+    if (!slTpLines || slTpLines.length === 0) {
+      // Remove existing series if data cleared
+      if (slSeriesRef.current) { try { chartRef.current.removeSeries(slSeriesRef.current); } catch {} slSeriesRef.current = null; }
+      if (tpSeriesRef.current) { try { chartRef.current.removeSeries(tpSeriesRef.current); } catch {} tpSeriesRef.current = null; }
+      return;
+    }
+
+    const slData = slTpLines.map((p) => ({ time: toChartTime(p.time, isDaily, timezoneOffset), value: p.sl }));
+    const tpData = slTpLines.map((p) => ({ time: toChartTime(p.time, isDaily, timezoneOffset), value: p.tp }));
+
+    if (!slSeriesRef.current) {
+      slSeriesRef.current = chartRef.current.addLineSeries({
+        color: "#ef4444", lineWidth: 1,
+        lineStyle: lc.LineStyle.Dashed,
+        lastValueVisible: true, priceLineVisible: false,
+        title: "SL",
+      });
+    }
+    slSeriesRef.current.setData(slData);
+    slSeriesRef.current.applyOptions({ visible: showSL });
+
+    if (!tpSeriesRef.current) {
+      tpSeriesRef.current = chartRef.current.addLineSeries({
+        color: "#22c55e", lineWidth: 1,
+        lineStyle: lc.LineStyle.Dashed,
+        lastValueVisible: true, priceLineVisible: false,
+        title: "TP",
+      });
+    }
+    tpSeriesRef.current.setData(tpData);
+    tpSeriesRef.current.applyOptions({ visible: showTP });
+  }, [slTpLines, chartTimeframe, timezoneOffset, showSL, showTP]);
+
+  // Toggle SL/TP visibility
+  useEffect(() => {
+    if (slSeriesRef.current) slSeriesRef.current.applyOptions({ visible: showSL });
+  }, [showSL]);
+  useEffect(() => {
+    if (tpSeriesRef.current) tpSeriesRef.current.applyOptions({ visible: showTP });
+  }, [showTP]);
+
   // Broker invalid overlay
   if (brokerConnected === false) {
     return (
@@ -529,6 +592,20 @@ export default function LiveChart({
         >
           <Grid3X3 className="h-3.5 w-3.5" />
         </button>
+        {slTpLines.length > 0 && (
+          <>
+            <label className="flex items-center gap-1 cursor-pointer text-xs text-muted-foreground">
+              <input type="checkbox" checked={showSL} onChange={(e) => setShowSL(e.target.checked)} className="accent-red-500 w-3 h-3" />
+              <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: "#ef4444" }} />
+              SL
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer text-xs text-muted-foreground">
+              <input type="checkbox" checked={showTP} onChange={(e) => setShowTP(e.target.checked)} className="accent-green-500 w-3 h-3" />
+              <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: "#22c55e" }} />
+              TP
+            </label>
+          </>
+        )}
         {chartRef.current && candleSeriesRef.current && (
           <DrawingToolbar chart={chartRef.current} series={candleSeriesRef.current} storageKey={`live_chart_drawings_${instruments.join(",")}`} />
         )}

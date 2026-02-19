@@ -27,6 +27,7 @@ import apiClient from "@/lib/api-client";
 import { useToastStore } from "@/stores/toast-store";
 import { ExternalLink } from "lucide-react";
 import LiveChart from "@/components/charts/live-chart";
+import type { SlTpPoint } from "@/components/charts/live-chart";
 import type { ChartMarker } from "@/components/charts/chart-indicators";
 
 function StatusBadge({ status }: { status: string }) {
@@ -327,6 +328,42 @@ export default function LiveTradingDetailPage() {
 
     return m;
   }, [chartOrders, chartTrades, chartLogs]);
+
+  // Build SL/TP premium price lines from PNL_DATA logs + trades
+  const slTpLines = useMemo<SlTpPoint[]>(() => {
+    if (!chartLogs.length || !chartTrades.length) return [];
+    const tradeWindows = chartTrades
+      .filter((t) => t.entry_at && t.entry_price && t.quantity)
+      .map((t) => ({
+        entryMs: new Date(t.entry_at).getTime(),
+        exitMs: t.exit_at ? new Date(t.exit_at).getTime() : Infinity,
+        entryPrice: t.entry_price,
+        quantity: t.quantity,
+        isShort: t.side === "SHORT" || t.side === "SELL",
+      }));
+    if (tradeWindows.length === 0) return [];
+
+    const points: SlTpPoint[] = [];
+    chartLogs.forEach((log) => {
+      if (!log.message?.startsWith("PNL_DATA|") || !log.timestamp) return;
+      const logMs = new Date(log.timestamp).getTime();
+      const parts: Record<string, string> = {};
+      log.message.split("|").slice(1).forEach((p: string) => {
+        const [k, v] = p.split("=");
+        if (k && v) parts[k] = v;
+      });
+      const sl = parseFloat(parts.sl);
+      const tp = parseFloat(parts.tp);
+      const matched = tradeWindows.find((w) => logMs >= w.entryMs && logMs <= w.exitMs);
+      if (matched && matched.quantity > 0 && !isNaN(sl) && !isNaN(tp)) {
+        const { entryPrice, quantity, isShort } = matched;
+        const slP = isShort ? entryPrice - sl / quantity : entryPrice + sl / quantity;
+        const tpP = isShort ? entryPrice - tp / quantity : entryPrice + tp / quantity;
+        points.push({ time: log.timestamp, sl: Math.round(slP * 100) / 100, tp: Math.round(tpP * 100) / 100 });
+      }
+    });
+    return points;
+  }, [chartLogs, chartTrades]);
 
   const handleStart = async () => {
     await startSession(sessionId);
@@ -700,6 +737,7 @@ export default function LiveTradingDetailPage() {
             isRunning={isRunning}
             brokerConnected={brokerStatus === null ? null : (brokerStatus.connected && brokerStatus.token_valid !== false)}
             markers={chartMarkers}
+            slTpLines={slTpLines}
           />
         </div>
 
