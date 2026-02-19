@@ -46,8 +46,10 @@ class NiftySuperTrendCPRStrategy(Strategy):
     15-min Nifty chart to generate directional signals.  Sells OTM options
     (PE on bullish signal, CE on bearish signal) targeting |delta| 0.30-0.35.
 
-    Entry: when close is above/below SuperTrend AND all CPR levels (pivot,
-    BC, TC) simultaneously.  No trigger/breakout step — enters directly.
+    Entry: Two-step trigger→breakout.  Step 1 (trigger): close is above/below
+    SuperTrend AND all CPR levels (pivot, BC, TC).  Step 2 (breakout): on a
+    subsequent bar, HIGH > trigger candle close (for long) or LOW < trigger
+    candle close (for short).  Uses tick-based (HIGH/LOW) breakout check.
     Exit when SuperTrend flips signal.  Positions force-closed at 3:10 PM IST.
 
     Parameters:
@@ -86,6 +88,13 @@ class NiftySuperTrendCPRStrategy(Strategy):
         self.entry_premium = None
         self.held_option = None
         self.held_lot_size = 25
+
+        # --- Trigger state (two-step entry) ---
+        self.bullish_trigger = False
+        self.bearish_trigger = False
+        self.trigger_close = None
+        self.trigger_option = None
+        self.trigger_lot_size = 25
 
         # --- Previous condition state (for chart markers) ---
         self.prev_bull = False
@@ -176,6 +185,66 @@ class NiftySuperTrendCPRStrategy(Strategy):
             ctx.log("EXIT (" + reason + ") | buyback " + self.held_option
                     + " x" + str(qty))
 
+    # -- Tick-level breakout (paper/live trading) --------------------------
+
+    def on_tick(self, ctx, symbol, price):
+        """Check breakout on every tick. Called by paper/live runner only."""
+        if symbol != self.symbol:
+            return
+        if self.in_long or self.in_short:
+            return
+        if not self.bullish_trigger and not self.bearish_trigger:
+            return
+        if not self.trigger_option:
+            return
+
+        # Entry cutoff check
+        bar_hour, bar_min = ctx.get_bar_ist_time()
+        before_entry_cutoff = (
+            bar_hour < self.entry_cutoff_hour
+            or (bar_hour == self.entry_cutoff_hour
+                and bar_min < self.entry_cutoff_minute)
+        )
+        if not before_entry_cutoff:
+            return
+
+        # Bull breakout: LTP > trigger candle close
+        if self.bullish_trigger and price > self.trigger_close:
+            trig_lvl = self.trigger_close
+            qty = self.num_lots * self.trigger_lot_size
+            ctx.sell(self.trigger_option, qty, exchange="NFO", product="MIS")
+            self.held_option = self.trigger_option
+            self.held_lot_size = self.trigger_lot_size
+            self.entry_premium = None
+            self.in_long = True
+            self.bullish_trigger = False
+            self.trigger_close = None
+            self.trigger_option = None
+            ctx.log(
+                "LONG ENTRY [tick] (Sell " + self.held_option
+                + ") @ LTP=" + str(round(price, 2))
+                + " trigger_close=" + str(round(trig_lvl, 2))
+            )
+            return
+
+        # Bear breakout: LTP < trigger candle close
+        if self.bearish_trigger and price < self.trigger_close:
+            trig_lvl = self.trigger_close
+            qty = self.num_lots * self.trigger_lot_size
+            ctx.sell(self.trigger_option, qty, exchange="NFO", product="MIS")
+            self.held_option = self.trigger_option
+            self.held_lot_size = self.trigger_lot_size
+            self.entry_premium = None
+            self.in_short = True
+            self.bearish_trigger = False
+            self.trigger_close = None
+            self.trigger_option = None
+            ctx.log(
+                "SHORT ENTRY [tick] (Sell " + self.held_option
+                + ") @ LTP=" + str(round(price, 2))
+                + " trigger_close=" + str(round(trig_lvl, 2))
+            )
+
     # -- Main bar handler --------------------------------------------------
 
     def on_data(self, ctx):
@@ -230,65 +299,56 @@ class NiftySuperTrendCPRStrategy(Strategy):
             or (bar_hour == self.cutoff_hour and bar_min < self.cutoff_minute)
         )
 
-        # -- Entry conditions -----------------------------------------------
+        # -- Entry conditions (close-based) -----------------------------------
         bull_cond = (cur_close > cur_st
                      and cur_close > pivot and cur_close > bc and cur_close > tc)
         bear_cond = (cur_close < cur_st
                      and cur_close < pivot and cur_close < bc and cur_close < tc)
 
-        # Trigger / negate markers for chart visualization
-        if bull_cond and not self.prev_bull:
+        # -- Bar-level breakout entry (backtest fallback; in paper/live on_tick fires first) --
+        # Long breakout: HIGH > trigger candle close
+        if (self.bullish_trigger and self.trigger_option
+                and not self.in_long and not self.in_short
+                and before_entry_cutoff and cur_high > self.trigger_close):
+            trig_lvl = self.trigger_close
+            qty = self.num_lots * self.trigger_lot_size
+            ctx.sell(self.trigger_option, qty, exchange="NFO", product="MIS")
+            self.held_option = self.trigger_option
+            self.held_lot_size = self.trigger_lot_size
+            self.entry_premium = None
+            self.in_long = True
+            self.bullish_trigger = False
+            self.trigger_close = None
+            self.trigger_option = None
             ctx.log(
-                "BULL TRIGGER | close=" + str(round(cur_close, 2))
+                "LONG ENTRY (Sell " + self.held_option + ") @ underlying="
+                + str(round(cur_close, 2))
+                + " high=" + str(round(cur_high, 2))
+                + " trigger_close=" + str(round(trig_lvl, 2))
                 + " ST=" + str(round(cur_st, 2))
             )
-        if not bull_cond and self.prev_bull and not self.in_long:
+
+        # Short breakout: LOW < trigger candle close
+        if (self.bearish_trigger and self.trigger_option
+                and not self.in_short and not self.in_long
+                and before_entry_cutoff and cur_low < self.trigger_close):
+            trig_lvl = self.trigger_close
+            qty = self.num_lots * self.trigger_lot_size
+            ctx.sell(self.trigger_option, qty, exchange="NFO", product="MIS")
+            self.held_option = self.trigger_option
+            self.held_lot_size = self.trigger_lot_size
+            self.entry_premium = None
+            self.in_short = True
+            self.bearish_trigger = False
+            self.trigger_close = None
+            self.trigger_option = None
             ctx.log(
-                "BULL TRIGGER NEGATED | close=" + str(round(cur_close, 2))
-            )
-        if bear_cond and not self.prev_bear:
-            ctx.log(
-                "BEAR TRIGGER | close=" + str(round(cur_close, 2))
+                "SHORT ENTRY (Sell " + self.held_option + ") @ underlying="
+                + str(round(cur_close, 2))
+                + " low=" + str(round(cur_low, 2))
+                + " trigger_close=" + str(round(trig_lvl, 2))
                 + " ST=" + str(round(cur_st, 2))
             )
-        if not bear_cond and self.prev_bear and not self.in_short:
-            ctx.log(
-                "BEAR TRIGGER NEGATED | close=" + str(round(cur_close, 2))
-            )
-        self.prev_bull = bull_cond
-        self.prev_bear = bear_cond
-
-        # -- Long entry: all bullish conditions met -> SELL PE -------------
-        if bull_cond and not self.in_long and not self.in_short and before_entry_cutoff:
-            opt = self.find_option_by_delta(ctx, cur_close, "PE", closes_list)
-            if opt:
-                qty = self.num_lots * opt.get("lot_size", 25)
-                self.held_lot_size = opt.get("lot_size", 25)
-                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
-                self.held_option = opt["tradingsymbol"]
-                self.entry_premium = None
-                self.in_long = True
-                ctx.log(
-                    "LONG ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
-                    + str(round(cur_close, 2))
-                    + " ST=" + str(round(cur_st, 2))
-                )
-
-        # -- Short entry: all bearish conditions met -> SELL CE ------------
-        if bear_cond and not self.in_short and not self.in_long and before_entry_cutoff:
-            opt = self.find_option_by_delta(ctx, cur_close, "CE", closes_list)
-            if opt:
-                qty = self.num_lots * opt.get("lot_size", 25)
-                self.held_lot_size = opt.get("lot_size", 25)
-                ctx.sell(opt["tradingsymbol"], qty, exchange="NFO", product="MIS")
-                self.held_option = opt["tradingsymbol"]
-                self.entry_premium = None
-                self.in_short = True
-                ctx.log(
-                    "SHORT ENTRY (Sell " + opt["tradingsymbol"] + ") @ underlying="
-                    + str(round(cur_close, 2))
-                    + " ST=" + str(round(cur_st, 2))
-                )
 
         # -- SuperTrend signal flip exit ------------------------------------
         if self.in_long and cur_close < cur_st:
@@ -315,7 +375,68 @@ class NiftySuperTrendCPRStrategy(Strategy):
                 ctx.log("SHORT EXIT (Cutoff)")
                 self.reset_position()
 
+            # Clear triggers at cutoff too
+            self.bullish_trigger = False
+            self.bearish_trigger = False
+            self.trigger_close = None
+            self.trigger_option = None
             return
+
+        # -- Trigger set / negate (AFTER entries so triggers fire on next bar/tick) --
+        # Bull trigger: conditions just became true -> pre-select option & arm trigger
+        if bull_cond and not self.prev_bull and not self.in_long:
+            opt = self.find_option_by_delta(ctx, cur_close, "PE", closes_list)
+            if opt:
+                self.bullish_trigger = True
+                self.bearish_trigger = False
+                self.trigger_close = cur_close
+                self.trigger_option = opt["tradingsymbol"]
+                self.trigger_lot_size = opt.get("lot_size", 25)
+                ctx.log(
+                    "BULL TRIGGER | close=" + str(round(cur_close, 2))
+                    + " ST=" + str(round(cur_st, 2))
+                    + " trigger_close=" + str(round(cur_close, 2))
+                    + " option=" + opt["tradingsymbol"]
+                )
+
+        # Bull trigger negated: conditions no longer true
+        if not bull_cond and self.prev_bull and not self.in_long:
+            if self.bullish_trigger:
+                self.bullish_trigger = False
+                self.trigger_close = None
+                self.trigger_option = None
+            ctx.log(
+                "BULL TRIGGER NEGATED | close=" + str(round(cur_close, 2))
+            )
+
+        # Bear trigger: conditions just became true -> pre-select option & arm trigger
+        if bear_cond and not self.prev_bear and not self.in_short:
+            opt = self.find_option_by_delta(ctx, cur_close, "CE", closes_list)
+            if opt:
+                self.bearish_trigger = True
+                self.bullish_trigger = False
+                self.trigger_close = cur_close
+                self.trigger_option = opt["tradingsymbol"]
+                self.trigger_lot_size = opt.get("lot_size", 25)
+                ctx.log(
+                    "BEAR TRIGGER | close=" + str(round(cur_close, 2))
+                    + " ST=" + str(round(cur_st, 2))
+                    + " trigger_close=" + str(round(cur_close, 2))
+                    + " option=" + opt["tradingsymbol"]
+                )
+
+        # Bear trigger negated: conditions no longer true
+        if not bear_cond and self.prev_bear and not self.in_short:
+            if self.bearish_trigger:
+                self.bearish_trigger = False
+                self.trigger_close = None
+                self.trigger_option = None
+            ctx.log(
+                "BEAR TRIGGER NEGATED | close=" + str(round(cur_close, 2))
+            )
+
+        self.prev_bull = bull_cond
+        self.prev_bear = bear_cond
 
     # -- Helpers -----------------------------------------------------------
 
@@ -325,6 +446,11 @@ class NiftySuperTrendCPRStrategy(Strategy):
         self.in_short = False
         self.entry_premium = None
         self.held_option = None
+        self.bullish_trigger = False
+        self.bearish_trigger = False
+        self.trigger_close = None
+        self.trigger_option = None
+        self.trigger_lot_size = 25
 
     def calc_prev_day_hlc(self, data, current_date):
         """Aggregate intraday bars to get previous day's High, Low, Close."""

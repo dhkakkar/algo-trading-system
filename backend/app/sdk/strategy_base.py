@@ -40,6 +40,14 @@ class Strategy:
         """Called when an order is rejected (e.g. missing OHLCV data). Optional."""
         pass
 
+    def on_tick(self, ctx: "TradingContext", symbol: str, price: float) -> None:
+        """Called on every tick in paper/live trading. Optional.
+
+        Use for tick-level logic such as breakout detection.  Not called
+        during backtesting (only bar data is available there).
+        """
+        pass
+
     def on_stop(self, ctx: "TradingContext") -> None:
         """Called when the strategy stops. Use for cleanup. Optional."""
         pass

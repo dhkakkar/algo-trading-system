@@ -382,6 +382,15 @@ class PaperTradingRunner(BaseRunner):
                     cur["low"] = price
                 cur["close"] = price
 
+        # Call strategy on_tick for every tick (tick-based entry/logic)
+        if self._strategy_instance and self._context:
+            for symbol, price in data.items():
+                try:
+                    self._strategy_instance.on_tick(self._context, symbol, price)
+                except Exception as exc:
+                    self._logs.append(f"[ERROR] on_tick: {type(exc).__name__}: {exc}")
+                    logger.warning("Paper strategy on_tick error: %s", exc)
+
         # Try to fill pending orders on every tick
         await self._process_orders()
 

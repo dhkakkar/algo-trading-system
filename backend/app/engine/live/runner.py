@@ -12,7 +12,7 @@ from app.engine.common.base_runner import BaseRunner
 from app.engine.common.events import OrderEvent
 from app.engine.live.risk_manager import RiskManager
 from app.engine.live.kite_executor import KiteExecutor
-from app.engine.paper.runner import PaperTradingContext
+from app.engine.paper.runner import PaperTradingContext, TIMEFRAME_SECONDS, _bar_start_time
 from app.engine.backtest.portfolio import Portfolio
 from app.sdk.context import TradingContext
 from app.sdk.types import FilledOrder, PositionInfo
@@ -45,10 +45,20 @@ class LiveTradingContext(TradingContext):
             symbol = inst if isinstance(inst, str) else inst.get("symbol", "")
         if not symbol:
             return {}
+        # Return the real aggregated in-progress bar (like paper trading)
+        bar = self._runner._current_bars.get(symbol)
+        if bar:
+            return {
+                "open": bar["open"], "high": bar["high"],
+                "low": bar["low"], "close": bar["close"],
+                "volume": bar["volume"],
+                "timestamp": bar.get("bar_start", datetime.now(IST)),
+            }
+        # Fallback: no bar yet, use LTP
         price = self._runner._current_prices.get(symbol, 0)
         return {
             "open": price, "high": price, "low": price, "close": price,
-            "volume": 0, "timestamp": datetime.now(timezone.utc).isoformat(),
+            "volume": 0, "timestamp": datetime.now(IST),
         }
 
     def log(self, message: str) -> None:
@@ -187,8 +197,9 @@ class LiveTradingRunner(BaseRunner):
     Lifecycle:
     1. Start with Kite client + strategy code
     2. Subscribe to live ticks
-    3. On each tick: update prices, check order statuses, call strategy.on_data()
-    4. All orders go through RiskManager before KiteExecutor
+    3. On each tick: update prices, aggregate bars, call strategy.on_tick()
+    4. On bar completion: call strategy.on_data() (matches paper/backtest behaviour)
+    5. All orders go through RiskManager before KiteExecutor
     """
 
     def __init__(self, session_id: str, strategy_code: str, config: dict[str, Any],
@@ -209,6 +220,11 @@ class LiveTradingRunner(BaseRunner):
         self._tracked_symbols: set[str] = set()
         self._pending_broker_orders: dict[str, dict] = {}  # broker_order_id -> order info
         self._historical_cache: dict[str, Any] = {}
+
+        # Bar aggregation (matches paper trading behaviour)
+        self._timeframe: str = config.get("timeframe", "5m")
+        self._tf_seconds: int = TIMEFRAME_SECONDS.get(self._timeframe, 300)
+        self._current_bars: dict[str, dict] = {}  # symbol -> {open,high,low,close,volume,bar_start}
 
         self._running = False
         self._paused = False
@@ -257,8 +273,44 @@ class LiveTradingRunner(BaseRunner):
         # Check pending order statuses
         await self._check_order_statuses()
 
-        # Call strategy
+        # --- Bar aggregation (matches paper trading) ---
+        now = datetime.now(timezone.utc)
+        bar_start = _bar_start_time(now, self._tf_seconds)
+        bar_completed = False
+
+        for symbol, price in data.items():
+            cur = self._current_bars.get(symbol)
+            if cur is None:
+                self._current_bars[symbol] = {
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume": 0, "bar_start": bar_start,
+                }
+            elif bar_start > cur["bar_start"]:
+                self._finalize_bar(symbol, cur)
+                bar_completed = True
+                self._current_bars[symbol] = {
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume": 0, "bar_start": bar_start,
+                }
+            else:
+                if price > cur["high"]:
+                    cur["high"] = price
+                if price < cur["low"]:
+                    cur["low"] = price
+                cur["close"] = price
+
+        # Call strategy on_tick for every tick (tick-based entry/logic)
         if self._strategy_instance and self._context:
+            for symbol, price in data.items():
+                try:
+                    self._strategy_instance.on_tick(self._context, symbol, price)
+                except Exception as exc:
+                    self._logs.append(f"[ERROR] on_tick: {type(exc).__name__}: {exc}")
+                    logger.warning("Live strategy on_tick error: %s", exc)
+
+        # Call strategy on_data only when a bar completes (matches paper/backtest)
+        if bar_completed and self._strategy_instance and self._context:
+            logger.info("Bar completed — calling on_data (session=%s)", self.session_id)
             try:
                 self._strategy_instance.on_data(self._context)
             except Exception as exc:
@@ -334,6 +386,25 @@ class LiveTradingRunner(BaseRunner):
             except Exception:
                 pass
 
+    def _finalize_bar(self, symbol: str, bar: dict):
+        """Append a completed bar to the historical cache DataFrame."""
+        import pandas as pd
+        ts = bar["bar_start"]
+        new_row = pd.DataFrame([{
+            "open": bar["open"], "high": bar["high"],
+            "low": bar["low"], "close": bar["close"],
+            "volume": bar["volume"],
+        }], index=[ts])
+        new_row.index.name = "timestamp"
+        df = self._historical_cache.get(symbol)
+        if df is not None and len(df) > 0:
+            self._historical_cache[symbol] = pd.concat([df, new_row])
+        else:
+            self._historical_cache[symbol] = new_row
+        msg = f"Bar {symbol}: O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} C={bar['close']:.2f}"
+        logger.info(msg)
+        self.slog.info(msg, source="runner")
+
     async def place_order(self, symbol: str, exchange: str, side: str, quantity: int,
                           order_type: str = "MARKET", price: float | None = None,
                           product: str = "MIS") -> str:
@@ -378,7 +449,8 @@ class LiveTradingRunner(BaseRunner):
         self._running = True
         self.risk_manager.reset_daily()
         self.slog.info(
-            f"Session started (mode=live, instruments={list(self._tracked_symbols)}, "
+            f"Session started (mode=live, timeframe={self._timeframe}, "
+            f"instruments={list(self._tracked_symbols)}, "
             f"capital={self._config.get('initial_capital', 100000)})",
             source="system",
         )
