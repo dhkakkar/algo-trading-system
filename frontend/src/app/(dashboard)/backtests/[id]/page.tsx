@@ -855,14 +855,16 @@ export default function BacktestDetailPage() {
     candleSeriesRefBT.current.setData(candleData as any);
     volumeSeriesRefBT.current.setData(volumeData as any);
 
+    // Determine if this chart shows an underlying instrument vs options
+    const rawInst = chartSymbol || bt.instruments?.[0] || "";
+    const parsed = parseInstrument(rawInst);
+    const isUnderlying = (bt.instruments || []).some(
+      (inst: string) => parseInstrument(inst).symbol.toUpperCase() === parsed.symbol.toUpperCase()
+    );
+
     // Filter trade markers to only show trades before current bar time
     const currentBarTime = slice[slice.length - 1]?.time;
     if (currentBarTime && tradeChartObjRef.current) {
-      const rawInst = chartSymbol || bt.instruments?.[0] || "";
-      const parsed = parseInstrument(rawInst);
-      const isUnderlying = (bt.instruments || []).some(
-        (inst: string) => parseInstrument(inst).symbol.toUpperCase() === parsed.symbol.toUpperCase()
-      );
       const symbolTrades = isUnderlying
         ? trades
         : trades.filter((t) => t.symbol.toUpperCase() === parsed.symbol.toUpperCase());
@@ -932,9 +934,15 @@ export default function BacktestDetailPage() {
     // Update P&L panel data up to current bar (replay mode)
     if (pnlSeriesRefBT.current && logs.length > 0 && currentBarTime) {
       const barMs = new Date(currentBarTime).getTime();
-      // Trade time windows for SL/TP filtering
+      // Trade time windows for SL/TP filtering (filter by current chart symbol on options charts)
       const tradeWindows = trades
-        .filter((t) => t.entry_at && t.exit_at)
+        .filter((t) => {
+          if (!t.entry_at || !t.exit_at) return false;
+          if (!isUnderlying) {
+            return t.symbol.toUpperCase() === parsed.symbol.toUpperCase();
+          }
+          return true;
+        })
         .map((t) => ({
           entryMs: new Date(t.entry_at).getTime(),
           exitMs: new Date(t.exit_at!).getTime(),
@@ -955,11 +963,11 @@ export default function BacktestDetailPage() {
         const pnl = parseFloat(parts.pnl);
         const sl = parseFloat(parts.sl);
         const tp = parseFloat(parts.tp);
-        if (!isNaN(pnl)) rpnl.push({ time: t, value: pnl });
         const inTrade = tradeWindows.some(
           (w) => logMs >= w.entryMs && logMs <= w.exitMs
         );
         if (inTrade) {
+          if (!isNaN(pnl)) rpnl.push({ time: t, value: pnl });
           if (!isNaN(sl)) rsl.push({ time: t, value: sl });
           if (!isNaN(tp)) rtp.push({ time: t, value: tp });
         }
@@ -1235,8 +1243,15 @@ export default function BacktestDetailPage() {
       // SL/TP constrained to each trade's entry→exit window and only on option charts
       if (logs.length > 0) {
         // Build trade time windows [entryMs, exitMs] for filtering
+        // On options charts, only include trades matching this chart's symbol
         const tradeWindows = trades
-          .filter((t) => t.entry_at && t.exit_at)
+          .filter((t) => {
+            if (!t.entry_at || !t.exit_at) return false;
+            if (!isUnderlyingChart) {
+              return t.symbol.toUpperCase() === parsedEarly.symbol.toUpperCase();
+            }
+            return true;
+          })
           .map((t) => ({
             entryMs: new Date(t.entry_at).getTime(),
             exitMs: new Date(t.exit_at!).getTime(),
@@ -1257,12 +1272,12 @@ export default function BacktestDetailPage() {
           const pnl = parseFloat(parts.pnl);
           const sl = parseFloat(parts.sl);
           const tp = parseFloat(parts.tp);
-          if (!isNaN(pnl)) pnlData.push({ time: t, value: pnl });
-          // Only include SL/TP within a trade's active window
+          // Only include data within matching trade's active window
           const inTrade = tradeWindows.some(
             (w) => logMs >= w.entryMs && logMs <= w.exitMs
           );
           if (inTrade) {
+            if (!isNaN(pnl)) pnlData.push({ time: t, value: pnl });
             if (!isNaN(sl)) slData.push({ time: t, value: sl });
             if (!isNaN(tp)) tpData.push({ time: t, value: tp });
           }
@@ -1283,7 +1298,7 @@ export default function BacktestDetailPage() {
             const slS = chart.addLineSeries({
               color: "#ef4444", lineWidth: 1,
               lineStyle: LineStyle.Dashed,
-              priceScaleId: "pnl", lastValueVisible: false,
+              priceScaleId: "pnl", lastValueVisible: true,
               priceLineVisible: false,
               title: "SL",
             });
@@ -1295,7 +1310,7 @@ export default function BacktestDetailPage() {
             const tpS = chart.addLineSeries({
               color: "#22c55e", lineWidth: 1,
               lineStyle: LineStyle.Dashed,
-              priceScaleId: "pnl", lastValueVisible: false,
+              priceScaleId: "pnl", lastValueVisible: true,
               priceLineVisible: false,
               title: "TP",
             });
@@ -1493,7 +1508,7 @@ export default function BacktestDetailPage() {
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
             priceLineVisible: false,
-            lastValueVisible: false,
+            lastValueVisible: true,
             crosshairMarkerVisible: false,
             title: "Pivot",
           });
@@ -1504,7 +1519,7 @@ export default function BacktestDetailPage() {
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
             priceLineVisible: false,
-            lastValueVisible: false,
+            lastValueVisible: true,
             crosshairMarkerVisible: false,
             title: "TC",
           });
@@ -1515,7 +1530,7 @@ export default function BacktestDetailPage() {
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
             priceLineVisible: false,
-            lastValueVisible: false,
+            lastValueVisible: true,
             crosshairMarkerVisible: false,
             title: "BC",
           });
