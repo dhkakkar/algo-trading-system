@@ -144,7 +144,11 @@ export default function ChartPage() {
     if (typeof window !== "undefined") {
       try {
         const saved = localStorage.getItem("chart_indicators");
-        if (saved) return JSON.parse(saved);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          // Merge with defaults so new indicator keys are always present
+          return { ...DEFAULT_INDICATORS, ...parsed };
+        }
       } catch {}
     }
     return DEFAULT_INDICATORS;

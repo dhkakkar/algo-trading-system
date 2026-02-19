@@ -527,7 +527,11 @@ export default function BacktestDetailPage() {
     if (typeof window !== "undefined") {
       try {
         const saved = localStorage.getItem("backtest_chart_indicators");
-        if (saved) return JSON.parse(saved);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          // Merge with defaults so new indicator keys are always present
+          return { ...DEFAULT_INDICATORS, ...parsed };
+        }
       } catch {}
     }
     return DEFAULT_INDICATORS;
