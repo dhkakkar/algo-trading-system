@@ -20,6 +20,7 @@ export interface IndicatorConfig {
   emaFast: { enabled: boolean; period: number };
   emaSlow: { enabled: boolean; period: number };
   sma: { enabled: boolean; period: number };
+  supertrend: { enabled: boolean; period: number; multiplier: number };
   cpr: CPRConfig;
   vwap: { enabled: boolean };
   bollinger: { enabled: boolean; period: number; stdDev: number };
@@ -29,6 +30,7 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
   emaFast: { enabled: false, period: 9 },
   emaSlow: { enabled: false, period: 21 },
   sma: { enabled: false, period: 20 },
+  supertrend: { enabled: false, period: 10, multiplier: 1.25 },
   cpr: { enabled: false, pivot: true, tc: true, bc: true, r1: true, r2: true, s1: true, s2: true },
   vwap: { enabled: false },
   bollinger: { enabled: false, period: 20, stdDev: 2 },
@@ -70,6 +72,8 @@ export const INDICATOR_COLORS = {
   cprR2: "#F44336",
   cprS1: "#4CAF50",
   cprS2: "#4CAF50",
+  supertrendUp: "#22c55e",
+  supertrendDown: "#ef4444",
   vwap: "#E91E63",
   bollingerUpper: "#607D8B",
   bollingerMiddle: "#607D8B",
@@ -155,6 +159,82 @@ function calcVWAP(candles: CandleData[], volumes: number[]): (number | null)[] {
     result.push(cumVol > 0 ? cumTP / cumVol : null);
   }
   return result;
+}
+
+function calcSuperTrend(
+  candles: CandleData[],
+  period: number,
+  multiplier: number
+): { value: (number | null)[]; direction: (1 | -1 | null)[] } {
+  const n = candles.length;
+  const value: (number | null)[] = new Array(n).fill(null);
+  const direction: (1 | -1 | null)[] = new Array(n).fill(null);
+  if (n === 0 || period <= 0) return { value, direction };
+
+  // Calculate True Range and ATR
+  const tr: number[] = [candles[0].high - candles[0].low];
+  for (let i = 1; i < n; i++) {
+    const hl = candles[i].high - candles[i].low;
+    const hc = Math.abs(candles[i].high - candles[i - 1].close);
+    const lc = Math.abs(candles[i].low - candles[i - 1].close);
+    tr.push(Math.max(hl, hc, lc));
+  }
+
+  // RMA (Wilder's smoothing) for ATR
+  const atr: number[] = new Array(n).fill(0);
+  if (n >= period) {
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum = sum + tr[i];
+    atr[period - 1] = sum / period;
+    for (let i = period; i < n; i++) {
+      atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+    }
+  }
+
+  // SuperTrend calculation
+  let prevUpper = 0, prevLower = 0, prevST = 0, prevDir = 1;
+  for (let i = period - 1; i < n; i++) {
+    const hl2 = (candles[i].high + candles[i].low) / 2;
+    let upperBand = hl2 + multiplier * atr[i];
+    let lowerBand = hl2 - multiplier * atr[i];
+
+    // Constrain bands
+    if (i > period - 1) {
+      if (lowerBand > prevLower || candles[i - 1].close < prevLower) {
+        // keep lowerBand
+      } else {
+        lowerBand = prevLower;
+      }
+      if (upperBand < prevUpper || candles[i - 1].close > prevUpper) {
+        // keep upperBand
+      } else {
+        upperBand = prevUpper;
+      }
+    }
+
+    // Direction
+    let dir: 1 | -1;
+    if (i === period - 1) {
+      dir = candles[i].close > upperBand ? 1 : -1;
+    } else {
+      if (prevDir === 1) {
+        dir = candles[i].close < lowerBand ? -1 : 1;
+      } else {
+        dir = candles[i].close > upperBand ? 1 : -1;
+      }
+    }
+
+    const st = dir === 1 ? lowerBand : upperBand;
+    value[i] = st;
+    direction[i] = dir;
+
+    prevUpper = upperBand;
+    prevLower = lowerBand;
+    prevST = st;
+    prevDir = dir;
+  }
+
+  return { value, direction };
 }
 
 interface CPRLevelData { time: any; value: number }
@@ -272,6 +352,16 @@ export function IndicatorPanel({
           <input type="checkbox" checked={config.sma.enabled} onChange={() => toggle("sma")} className="rounded border-input h-3.5 w-3.5 accent-cyan-500" />
           <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.sma }}>SMA</span>
           <input type="number" value={config.sma.period} onChange={(e) => updateParam("sma", "period", parseInt(e.target.value) || 20)} className="w-14 px-1.5 py-0.5 text-xs rounded border border-input bg-background text-center" min={1} max={200} />
+        </div>
+        {/* SuperTrend */}
+        <div className="flex items-center gap-2">
+          <input type="checkbox" checked={config.supertrend.enabled} onChange={() => toggle("supertrend")} className="rounded border-input h-3.5 w-3.5 accent-green-500" />
+          <span className="text-xs font-medium flex-1" style={{ color: INDICATOR_COLORS.supertrendUp }}>SuperTrend</span>
+          <div className="flex items-center gap-1">
+            <input type="number" value={config.supertrend.period} onChange={(e) => updateParam("supertrend", "period", parseInt(e.target.value) || 10)} className="w-10 px-1 py-0.5 text-xs rounded border border-input bg-background text-center" min={1} max={100} />
+            <span className="text-[10px] text-muted-foreground">/</span>
+            <input type="number" value={config.supertrend.multiplier} onChange={(e) => updateParam("supertrend", "multiplier", parseFloat(e.target.value) || 1.25)} className="w-10 px-1 py-0.5 text-xs rounded border border-input bg-background text-center" min={0.5} max={10} step={0.25} />
+          </div>
         </div>
         <div className="border-t border-border my-1" />
         {/* CPR */}
@@ -402,6 +492,46 @@ export function applyIndicators(
       .setData(toTimeSeries(calcVWAP(candles, volumes)));
   } else {
     removeSeries(chart, seriesRef, "vwap");
+  }
+
+  // --- SuperTrend ---
+  if (config.supertrend.enabled) {
+    const st = calcSuperTrend(candles, config.supertrend.period, config.supertrend.multiplier);
+    // Build two series: green segments for uptrend, red for downtrend
+    const upData: ({ time: any; value: number } | null)[] = [];
+    const downData: ({ time: any; value: number } | null)[] = [];
+    for (let i = 0; i < candles.length; i++) {
+      if (st.value[i] == null || !isFinite(st.value[i]!)) {
+        upData.push(null);
+        downData.push(null);
+        continue;
+      }
+      const pt = { time: times[i] as any, value: st.value[i]! };
+      if (st.direction[i] === 1) {
+        upData.push(pt);
+        // Add bridge point from down to up
+        if (i > 0 && st.direction[i - 1] === -1 && st.value[i - 1] != null) {
+          downData.push(pt);
+        } else {
+          downData.push(null);
+        }
+      } else {
+        downData.push(pt);
+        // Add bridge point from up to down
+        if (i > 0 && st.direction[i - 1] === 1 && st.value[i - 1] != null) {
+          upData.push(pt);
+        } else {
+          upData.push(null);
+        }
+      }
+    }
+    getOrCreateLine(chart, seriesRef, "supertrendUp", { color: INDICATOR_COLORS.supertrendUp, lineWidth: 2 })
+      .setData(upData.filter(Boolean));
+    getOrCreateLine(chart, seriesRef, "supertrendDown", { color: INDICATOR_COLORS.supertrendDown, lineWidth: 2 })
+      .setData(downData.filter(Boolean));
+  } else {
+    removeSeries(chart, seriesRef, "supertrendUp");
+    removeSeries(chart, seriesRef, "supertrendDown");
   }
 
   // --- Bollinger Bands ---
