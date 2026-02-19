@@ -944,7 +944,7 @@ export default function BacktestDetailPage() {
     // Update P&L panel data up to current bar (replay mode)
     if (pnlSeriesRefBT.current && logs.length > 0 && currentBarTime) {
       const barMs = new Date(currentBarTime).getTime();
-      // Trade time windows for SL/TP filtering (filter by current chart symbol on options charts)
+      // Trade windows with entry info for SL/TP → premium conversion
       const tradeWindows = trades
         .filter((t) => {
           if (!t.entry_at || !t.exit_at) return false;
@@ -956,6 +956,9 @@ export default function BacktestDetailPage() {
         .map((t) => ({
           entryMs: new Date(t.entry_at).getTime(),
           exitMs: new Date(t.exit_at!).getTime(),
+          entryPrice: t.entry_price,
+          quantity: t.quantity,
+          isShort: t.side === "SHORT" || t.side === "SELL",
         }));
       const rpnl: any[] = [];
       const rsl: any[] = [];
@@ -973,13 +976,22 @@ export default function BacktestDetailPage() {
         const pnl = parseFloat(parts.pnl);
         const sl = parseFloat(parts.sl);
         const tp = parseFloat(parts.tp);
-        const inTrade = tradeWindows.some(
+        const matchedTrade = tradeWindows.find(
           (w) => logMs >= w.entryMs && logMs <= w.exitMs
         );
-        if (inTrade) {
+        if (matchedTrade) {
           if (!isNaN(pnl)) rpnl.push({ time: t, value: pnl });
-          if (!isNaN(sl)) rsl.push({ time: t, value: sl });
-          if (!isNaN(tp)) rtp.push({ time: t, value: tp });
+          const { entryPrice, quantity, isShort: isSh } = matchedTrade;
+          if (quantity > 0) {
+            if (!isNaN(sl)) {
+              const slP = isSh ? entryPrice - sl / quantity : entryPrice + sl / quantity;
+              rsl.push({ time: t, value: Math.round(slP * 100) / 100 });
+            }
+            if (!isNaN(tp)) {
+              const tpP = isSh ? entryPrice - tp / quantity : entryPrice + tp / quantity;
+              rtp.push({ time: t, value: Math.round(tpP * 100) / 100 });
+            }
+          }
         }
       });
       pnlSeriesRefBT.current.setData(rpnl);
@@ -1249,11 +1261,9 @@ export default function BacktestDetailPage() {
         (inst) => parseInstrument(inst).symbol.toUpperCase() === parsedEarly.symbol.toUpperCase()
       );
 
-      // P&L panel with SL/TP lines (parsed from PNL_DATA logs)
-      // SL/TP constrained to each trade's entry→exit window and only on option charts
+      // P&L panel + SL/TP price lines (parsed from PNL_DATA logs)
       if (logs.length > 0) {
-        // Build trade time windows [entryMs, exitMs] for filtering
-        // On options charts, only include trades matching this chart's symbol
+        // Build trade windows with entry info for SL/TP → premium conversion
         const tradeWindows = trades
           .filter((t) => {
             if (!t.entry_at || !t.exit_at) return false;
@@ -1265,6 +1275,9 @@ export default function BacktestDetailPage() {
           .map((t) => ({
             entryMs: new Date(t.entry_at).getTime(),
             exitMs: new Date(t.exit_at!).getTime(),
+            entryPrice: t.entry_price,
+            quantity: t.quantity,
+            isShort: t.side === "SHORT" || t.side === "SELL",
           }));
 
         const pnlData: any[] = [];
@@ -1282,14 +1295,23 @@ export default function BacktestDetailPage() {
           const pnl = parseFloat(parts.pnl);
           const sl = parseFloat(parts.sl);
           const tp = parseFloat(parts.tp);
-          // Only include data within matching trade's active window
-          const inTrade = tradeWindows.some(
+          const matchedTrade = tradeWindows.find(
             (w) => logMs >= w.entryMs && logMs <= w.exitMs
           );
-          if (inTrade) {
+          if (matchedTrade) {
             if (!isNaN(pnl)) pnlData.push({ time: t, value: pnl });
-            if (!isNaN(sl)) slData.push({ time: t, value: sl });
-            if (!isNaN(tp)) tpData.push({ time: t, value: tp });
+            // Convert SL/TP from INR/lot to premium price
+            const { entryPrice, quantity, isShort } = matchedTrade;
+            if (quantity > 0) {
+              if (!isNaN(sl)) {
+                const slPremium = isShort ? entryPrice - sl / quantity : entryPrice + sl / quantity;
+                slData.push({ time: t, value: Math.round(slPremium * 100) / 100 });
+              }
+              if (!isNaN(tp)) {
+                const tpPremium = isShort ? entryPrice - tp / quantity : entryPrice + tp / quantity;
+                tpData.push({ time: t, value: Math.round(tpPremium * 100) / 100 });
+              }
+            }
           }
         });
 
@@ -1303,39 +1325,37 @@ export default function BacktestDetailPage() {
           pnlS.setData(pnlData);
           pnlSeriesRefBT.current = pnlS;
 
-          // SL/TP only shown on the options chart where the order was placed
-          if (!isUnderlyingChart && slData.length > 0) {
-            const slS = chart.addLineSeries({
-              color: "#ef4444", lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              priceScaleId: "pnl", lastValueVisible: true,
-              priceLineVisible: false,
-              title: "SL",
-            });
-            slS.setData(slData);
-            slSeriesRefBT.current = slS;
-          }
-
-          if (!isUnderlyingChart && tpData.length > 0) {
-            const tpS = chart.addLineSeries({
-              color: "#22c55e", lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              priceScaleId: "pnl", lastValueVisible: true,
-              priceLineVisible: false,
-              title: "TP",
-            });
-            tpS.setData(tpData);
-            tpSeriesRefBT.current = tpS;
-          }
-
           chart.priceScale("pnl").applyOptions({
             scaleMargins: { top: 0.7, bottom: 0.02 },
           });
-
-          // Adjust volume to share bottom space
           chart.priceScale("volume").applyOptions({
             scaleMargins: { top: 0.92, bottom: 0 },
           });
+        }
+
+        // SL/TP as premium price lines on the main candle chart (options only)
+        if (!isUnderlyingChart && slData.length > 0) {
+          const slS = chart.addLineSeries({
+            color: "#ef4444", lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            lastValueVisible: true,
+            priceLineVisible: false,
+            title: "SL",
+          });
+          slS.setData(slData);
+          slSeriesRefBT.current = slS;
+        }
+
+        if (!isUnderlyingChart && tpData.length > 0) {
+          const tpS = chart.addLineSeries({
+            color: "#22c55e", lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            lastValueVisible: true,
+            priceLineVisible: false,
+            title: "TP",
+          });
+          tpS.setData(tpData);
+          tpSeriesRefBT.current = tpS;
         }
       }
 
