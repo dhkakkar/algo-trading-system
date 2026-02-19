@@ -9,7 +9,7 @@ Pre-loads options instrument metadata and OHLCV data so that:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from app.core.timezone import IST
@@ -146,10 +146,19 @@ class OptionsHandler:
                 "timestamp": bar_timestamp,
             }
 
-        # Look for the nearest bar before this timestamp
+        # Look for the nearest bar before this timestamp, but only within
+        # a reasonable window (30 min).  Returning a bar from hours or days
+        # ago would produce wildly incorrect fill prices.
         mask = df.index <= bar_timestamp
         if mask.any():
             nearest = df.index[mask][-1]
+            gap = bar_timestamp - nearest
+            if gap > timedelta(minutes=30):
+                logger.warning(
+                    "get_option_bar(%s, %s): nearest bar is %s (gap=%s), too stale — skipping",
+                    tradingsymbol, bar_timestamp, nearest, gap,
+                )
+                return None
             row = df.loc[nearest]
             return {
                 "open": float(row["open"]),

@@ -180,9 +180,12 @@ async def _run_backtest(backtest_id: str):
                     options_ohlcv: dict[str, pd.DataFrame] = {}
                     tokens_to_fetch: list[tuple[int, str, str]] = []
 
+                    # Expected last trading day of the backtest (for gap detection)
+                    expected_end = datetime.combine(backtest.end_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+
                     for inst in relevant_instruments:
                         tsymbol = inst.tradingsymbol
-                        existing = await db.execute(
+                        data_result = await db.execute(
                             select(OHLCVData).where(
                                 and_(
                                     OHLCVData.instrument_token == inst.instrument_token,
@@ -190,28 +193,23 @@ async def _run_backtest(backtest_id: str):
                                     OHLCVData.time >= start_dt,
                                     OHLCVData.time <= end_dt,
                                 )
-                            ).order_by(OHLCVData.time.asc()).limit(1)
+                            ).order_by(OHLCVData.time.asc())
                         )
-                        if existing.scalar_one_or_none():
-                            data_result = await db.execute(
-                                select(OHLCVData).where(
-                                    and_(
-                                        OHLCVData.instrument_token == inst.instrument_token,
-                                        OHLCVData.interval == interval,
-                                        OHLCVData.time >= start_dt,
-                                        OHLCVData.time <= end_dt,
-                                    )
-                                ).order_by(OHLCVData.time.asc())
-                            )
-                            records = list(data_result.scalars().all())
-                            if records:
-                                rows = [{
-                                    "open": float(r.open), "high": float(r.high),
-                                    "low": float(r.low), "close": float(r.close),
-                                    "volume": int(r.volume), "timestamp": r.time,
-                                } for r in records]
-                                df = pd.DataFrame(rows).set_index("timestamp").sort_index()
-                                options_ohlcv[tsymbol] = df
+                        records = list(data_result.scalars().all())
+                        if records:
+                            rows = [{
+                                "open": float(r.open), "high": float(r.high),
+                                "low": float(r.low), "close": float(r.close),
+                                "volume": int(r.volume), "timestamp": r.time,
+                            } for r in records]
+                            df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+                            options_ohlcv[tsymbol] = df
+                            # Check if data covers the full date range — if
+                            # the last bar is before the last backtest day,
+                            # the DB has partial data and we need to fetch
+                            # the missing days from Kite.
+                            if df.index[-1] < expected_end:
+                                tokens_to_fetch.append((inst.instrument_token, tsymbol, "NFO"))
                         else:
                             tokens_to_fetch.append((inst.instrument_token, tsymbol, "NFO"))
 

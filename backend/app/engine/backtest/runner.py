@@ -974,10 +974,22 @@ class BacktestRunner(BaseRunner):
                 ts = self.data_handler.current_timestamp
                 if ts:
                     current_bar = self.options_handler.get_option_bar(order.symbol, ts)
-                    # Fix: ensure fill timestamp uses the underlying bar's time,
-                    # not the option bar's (which may fall back to a stale bar)
-                    if current_bar is not None and ts:
+                    if current_bar is not None:
+                        # Use the underlying bar's timestamp for the fill
                         current_bar["timestamp"] = ts
+                    else:
+                        # No option bar available (data gap or stale) — cancel order
+                        self._add_log(
+                            "WARNING",
+                            f"No option bar for {order.symbol} at {ts} — order cancelled",
+                            "runner",
+                        )
+                        order.status = "cancelled"
+                        for rec in self.portfolio.orders:
+                            if rec["order_id"] == order.order_id:
+                                rec["status"] = "cancelled"
+                                break
+                        continue
             if current_bar is None:
                 current_bar = self.data_handler.get_current_bar(order.symbol)
 
