@@ -103,20 +103,25 @@ def supertrend(
     lower_basic = hl2 - multiplier * atr_vals
 
     n = len(close)
-    upper_band = np.empty(n, dtype=np.float64)
-    lower_band = np.empty(n, dtype=np.float64)
-    st = np.empty(n, dtype=np.float64)
+    upper_band = np.full(n, np.nan, dtype=np.float64)
+    lower_band = np.full(n, np.nan, dtype=np.float64)
+    st = np.full(n, np.nan, dtype=np.float64)
 
     close_arr = close.values.astype(np.float64)
     upper_basic_arr = upper_basic.values.astype(np.float64)
     lower_basic_arr = lower_basic.values.astype(np.float64)
 
-    upper_band[0] = upper_basic_arr[0]
-    lower_band[0] = lower_basic_arr[0]
-    # Initial direction: bullish if close > upper band
-    st[0] = lower_band[0] if close_arr[0] > upper_band[0] else upper_band[0]
+    # Start from the first index where ATR is valid (period - 1)
+    start = period - 1
+    if start >= n:
+        return pd.Series(st, index=close.index, name="supertrend")
 
-    for i in range(1, n):
+    upper_band[start] = upper_basic_arr[start]
+    lower_band[start] = lower_basic_arr[start]
+    # Initial direction: bullish if close > upper band
+    st[start] = lower_band[start] if close_arr[start] > upper_band[start] else upper_band[start]
+
+    for i in range(start + 1, n):
         # --- lower band ---
         if lower_basic_arr[i] > lower_band[i - 1] or close_arr[i - 1] < lower_band[i - 1]:
             lower_band[i] = lower_basic_arr[i]
@@ -143,10 +148,7 @@ def supertrend(
             else:
                 st[i] = upper_band[i]
 
-    result = pd.Series(st, index=close.index, name="supertrend")
-    # Propagate NaN from ATR warm-up period
-    result.iloc[: period - 1] = np.nan
-    return result
+    return pd.Series(st, index=close.index, name="supertrend")
 
 
 def adx(
