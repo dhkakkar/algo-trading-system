@@ -974,6 +974,10 @@ class BacktestRunner(BaseRunner):
                 ts = self.data_handler.current_timestamp
                 if ts:
                     current_bar = self.options_handler.get_option_bar(order.symbol, ts)
+                    # Fix: ensure fill timestamp uses the underlying bar's time,
+                    # not the option bar's (which may fall back to a stale bar)
+                    if current_bar is not None and ts:
+                        current_bar["timestamp"] = ts
             if current_bar is None:
                 current_bar = self.data_handler.get_current_bar(order.symbol)
 
