@@ -1134,6 +1134,9 @@ export default function BacktestDetailPage() {
     if (!rawInst) return;
     const { exchange, symbol } = parseInstrument(rawInst);
 
+    // Options data is always stored at 5m; use 5m for NFO symbols
+    const chartInterval = exchange.toUpperCase() === "NFO" ? "5m" : bt.timeframe;
+
     setChartLoading(true);
     apiClient
       .get("/market-data/ohlcv", {
@@ -1142,7 +1145,7 @@ export default function BacktestDetailPage() {
           exchange,
           from_date: bt.start_date,
           to_date: bt.end_date,
-          interval: bt.timeframe,
+          interval: chartInterval,
         },
       })
       .then((res) => setChartOHLCV(res.data))

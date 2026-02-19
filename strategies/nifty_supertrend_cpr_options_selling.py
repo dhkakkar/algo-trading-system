@@ -87,6 +87,10 @@ class NiftySuperTrendCPRStrategy(Strategy):
         self.held_option = None
         self.held_lot_size = 25
 
+        # --- Previous condition state (for chart markers) ---
+        self.prev_bull = False
+        self.prev_bear = False
+
         # --- Previous day HLC for CPR ---
         self.last_date = None
         self.prev_day_high = None
@@ -232,17 +236,27 @@ class NiftySuperTrendCPRStrategy(Strategy):
         bear_cond = (cur_close < cur_st
                      and cur_close < pivot and cur_close < bc and cur_close < tc)
 
-        # Debug: log values once per bar when not in position
-        if not self.in_long and not self.in_short and before_entry_cutoff:
+        # Trigger / negate markers for chart visualization
+        if bull_cond and not self.prev_bull:
             ctx.log(
-                "DBG | c=" + str(round(cur_close, 1))
-                + " ST=" + str(round(cur_st, 1))
-                + " P=" + str(round(pivot, 1))
-                + " BC=" + str(round(bc, 1))
-                + " TC=" + str(round(tc, 1))
-                + " bull=" + str(bull_cond)
-                + " bear=" + str(bear_cond)
+                "BULL TRIGGER | close=" + str(round(cur_close, 2))
+                + " ST=" + str(round(cur_st, 2))
             )
+        if not bull_cond and self.prev_bull and not self.in_long:
+            ctx.log(
+                "BULL TRIGGER NEGATED | close=" + str(round(cur_close, 2))
+            )
+        if bear_cond and not self.prev_bear:
+            ctx.log(
+                "BEAR TRIGGER | close=" + str(round(cur_close, 2))
+                + " ST=" + str(round(cur_st, 2))
+            )
+        if not bear_cond and self.prev_bear and not self.in_short:
+            ctx.log(
+                "BEAR TRIGGER NEGATED | close=" + str(round(cur_close, 2))
+            )
+        self.prev_bull = bull_cond
+        self.prev_bear = bear_cond
 
         # -- Long entry: all bullish conditions met -> SELL PE -------------
         if bull_cond and not self.in_long and not self.in_short and before_entry_cutoff:
