@@ -208,6 +208,19 @@ class NiftyEMACPRStrategy(Strategy):
             return 0.0
         return (self.entry_premium - current_premium) * self.held_lot_size
 
+    def calc_worst_pnl_per_lot(self, ctx):
+        """Return worst-case P&L per lot within the current bar.
+
+        Uses the option bar HIGH (worst case for seller) for intra-bar
+        stop-loss checks.  Falls back to close-based calc if unavailable.
+        """
+        if self.entry_premium is None or self.held_option is None:
+            return 0.0
+        high_premium = ctx.get_option_high(self.held_option)
+        if high_premium is None:
+            return self.calc_pnl_per_lot(ctx)
+        return (self.entry_premium - high_premium) * self.held_lot_size
+
     # -- Main bar handler --------------------------------------------------
 
     def on_data(self, ctx):
@@ -395,24 +408,31 @@ class NiftyEMACPRStrategy(Strategy):
         # -- P&L-based exits (TP / SL / TSL) ------------------------------
         if (self.in_long or self.in_short) and self.entry_premium is not None:
             pnl_per_lot = self.calc_pnl_per_lot(ctx)
+            # Worst-case P&L within the bar (option high = max loss for seller)
+            worst_pnl = self.calc_worst_pnl_per_lot(ctx)
 
             # Emit P&L data for chart visualization
             ctx.log("PNL_DATA|pnl=" + str(round(pnl_per_lot, 2))
                     + "|sl=" + str(round(self.sl_level_per_lot, 2))
                     + "|tp=" + str(self.tp_per_lot))
 
-            # Level-cross exit (price crossed adverse EMA/CPR level)
-            level_cross_exit = False
-            if self.in_long:
-                if (cur_close < cur_ema20 and cur_close < cur_ema60
-                        and cur_close < pivot and cur_close < bc and cur_close < tc):
-                    level_cross_exit = True
-            elif self.in_short:
-                if (cur_close > cur_ema20 and cur_close > cur_ema60
-                        and cur_close > pivot and cur_close > bc and cur_close > tc):
-                    level_cross_exit = True
+            # SL check first (tick-based: uses option HIGH, not close)
+            if worst_pnl <= self.sl_level_per_lot:
+                direction = "LONG" if self.in_long else "SHORT"
+                reason = "TSL" if self.tsl_active else "Initial SL"
+                self.exit_held_option(ctx, direction + " " + reason)
+                ctx.log(direction + " EXIT (" + reason + ") | P&L/lot="
+                        + str(round(worst_pnl, 2))
+                        + " (worst=" + str(round(worst_pnl, 2))
+                        + ", close=" + str(round(pnl_per_lot, 2)) + ") INR")
+                if self.in_long:
+                    self.block_long = True
+                else:
+                    self.block_short = True
+                self.reset_position()
 
-            if level_cross_exit:
+            # Level-cross exit (price crossed adverse EMA/CPR level)
+            elif self.check_level_cross(cur_close, cur_ema20, cur_ema60, pivot, bc, tc):
                 direction = "LONG" if self.in_long else "SHORT"
                 self.exit_held_option(ctx, direction + " Level Cross")
                 ctx.log(direction + " EXIT (Level Cross) | P&L/lot="
@@ -423,7 +443,7 @@ class NiftyEMACPRStrategy(Strategy):
                     self.block_short = True
                 self.reset_position()
 
-            # Take Profit
+            # Take Profit (candle close based)
             elif pnl_per_lot >= self.tp_per_lot:
                 direction = "LONG" if self.in_long else "SHORT"
                 self.exit_held_option(ctx, direction + " TP")
@@ -459,19 +479,6 @@ class NiftyEMACPRStrategy(Strategy):
                         ctx.log("TSL step=" + str(self.tsl_step)
                                 + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)) + " INR")
 
-                # SL check (pnl dropped below SL level)
-                if pnl_per_lot <= self.sl_level_per_lot:
-                    direction = "LONG" if self.in_long else "SHORT"
-                    reason = "TSL" if self.tsl_active else "Initial SL"
-                    self.exit_held_option(ctx, direction + " " + reason)
-                    ctx.log(direction + " EXIT (" + reason + ") | P&L/lot="
-                            + str(round(pnl_per_lot, 2)) + " INR")
-                    if self.in_long:
-                        self.block_long = True
-                    else:
-                        self.block_short = True
-                    self.reset_position()
-
         # -- Time cutoff -- 3:10 PM IST ------------------------------------
         if not before_cutoff:
             if self.in_long:
@@ -505,6 +512,16 @@ class NiftyEMACPRStrategy(Strategy):
         self.tsl_step = 0
         self.tsl_active = False
         self.held_option = None
+
+    def check_level_cross(self, cur_close, ema20, ema60, pivot, bc, tc):
+        """True if close crossed all levels adversely (exit signal)."""
+        if self.in_long:
+            return (cur_close < ema20 and cur_close < ema60
+                    and cur_close < pivot and cur_close < bc and cur_close < tc)
+        if self.in_short:
+            return (cur_close > ema20 and cur_close > ema60
+                    and cur_close > pivot and cur_close > bc and cur_close > tc)
+        return False
 
     def calc_prev_day_hlc(self, data, current_date):
         """Aggregate intraday bars to get previous day's High, Low, Close."""

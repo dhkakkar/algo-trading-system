@@ -332,6 +332,23 @@ class NiftyEMACPRStrategy(Strategy):
             return 0.0
         return (self.entry_premium - current_premium) * self.held_lot_size
 
+    def calc_worst_pnl_per_lot(self, ctx):
+        if self.entry_premium is None or self.held_option is None:
+            return 0.0
+        high_premium = ctx.get_option_high(self.held_option)
+        if high_premium is None:
+            return self.calc_pnl_per_lot(ctx)
+        return (self.entry_premium - high_premium) * self.held_lot_size
+
+    def check_level_cross(self, cur_close, ema20, ema60, pivot, bc, tc):
+        if self.in_long:
+            return (cur_close < ema20 and cur_close < ema60
+                    and cur_close < pivot and cur_close < bc and cur_close < tc)
+        if self.in_short:
+            return (cur_close > ema20 and cur_close > ema60
+                    and cur_close > pivot and cur_close > bc and cur_close > tc)
+        return False
+
     def on_data(self, ctx):
         lookback = max(self.ema_slow + 10, 200)
         data = ctx.get_historical_data(self.symbol, exchange=self.exchange, periods=lookback)
@@ -479,67 +496,79 @@ class NiftyEMACPRStrategy(Strategy):
                 ctx.log("SHORT ENTRY (Sell " + opt["tradingsymbol"] + ") | SL/lot="
                         + str(self.sl_per_lot) + " TP/lot=" + str(self.tp_per_lot))
 
-        # P&L exits (TP / SL / TSL)
+        # P&L-based exits (TP / SL / TSL)
         if (self.in_long or self.in_short) and self.entry_premium is not None:
-            pnl = self.calc_pnl_per_lot(ctx)
-            direction = "LONG" if self.in_long else "SHORT"
+            pnl_per_lot = self.calc_pnl_per_lot(ctx)
+            # Worst-case P&L within the bar (option high = max loss for seller)
+            worst_pnl = self.calc_worst_pnl_per_lot(ctx)
 
             # Emit P&L data for chart visualization
-            ctx.log("PNL_DATA|pnl=" + str(round(pnl, 2))
+            ctx.log("PNL_DATA|pnl=" + str(round(pnl_per_lot, 2))
                     + "|sl=" + str(round(self.sl_level_per_lot, 2))
                     + "|tp=" + str(self.tp_per_lot))
 
-            # Level-cross exit
-            level_cross_exit = False
-            if self.in_long:
-                if (cur_close < cur_ema20 and cur_close < cur_ema60
-                        and cur_close < pivot and cur_close < bc and cur_close < tc):
-                    level_cross_exit = True
-            elif self.in_short:
-                if (cur_close > cur_ema20 and cur_close > cur_ema60
-                        and cur_close > pivot and cur_close > bc and cur_close > tc):
-                    level_cross_exit = True
-
-            if level_cross_exit:
-                self.exit_held_option(ctx, direction + " Level Cross")
-                ctx.log(direction + " EXIT (Level Cross) | P&L/lot=" + str(round(pnl, 2)) + " INR")
+            # SL check first (tick-based: uses option HIGH, not close)
+            if worst_pnl <= self.sl_level_per_lot:
+                direction = "LONG" if self.in_long else "SHORT"
+                reason = "TSL" if self.tsl_active else "Initial SL"
+                self.exit_held_option(ctx, direction + " " + reason)
+                ctx.log(direction + " EXIT (" + reason + ") | P&L/lot="
+                        + str(round(worst_pnl, 2))
+                        + " (worst=" + str(round(worst_pnl, 2))
+                        + ", close=" + str(round(pnl_per_lot, 2)) + ") INR")
                 if self.in_long:
                     self.block_long = True
                 else:
                     self.block_short = True
                 self.reset_position()
 
-            elif pnl >= self.tp_per_lot:
+            # Level-cross exit (price crossed adverse EMA/CPR level)
+            elif self.check_level_cross(cur_close, cur_ema20, cur_ema60, pivot, bc, tc):
+                direction = "LONG" if self.in_long else "SHORT"
+                self.exit_held_option(ctx, direction + " Level Cross")
+                ctx.log(direction + " EXIT (Level Cross) | P&L/lot="
+                        + str(round(pnl_per_lot, 2)) + " INR")
+                if self.in_long:
+                    self.block_long = True
+                else:
+                    self.block_short = True
+                self.reset_position()
+
+            # Take Profit (candle close based)
+            elif pnl_per_lot >= self.tp_per_lot:
+                direction = "LONG" if self.in_long else "SHORT"
                 self.exit_held_option(ctx, direction + " TP")
-                ctx.log(direction + " EXIT (TP) | P&L/lot=" + str(round(pnl, 2)) + " INR")
+                ctx.log(direction + " EXIT (TP) | P&L/lot=" + str(round(pnl_per_lot, 2)) + " INR")
                 if self.in_long:
                     self.block_long = True
                 else:
                     self.block_short = True
                 self.reset_position()
             else:
-                if pnl > self.peak_pnl_per_lot:
-                    self.peak_pnl_per_lot = pnl
+                # Track peak profit
+                if pnl_per_lot > self.peak_pnl_per_lot:
+                    self.peak_pnl_per_lot = pnl_per_lot
+
+                # TSL activation
                 if not self.tsl_active and self.peak_pnl_per_lot >= self.tsl_activation:
                     self.tsl_active = True
                     self.tsl_step = 1
-                    self.sl_level_per_lot = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
-                    ctx.log("TSL ON step=1 | SL/lot=" + str(round(self.sl_level_per_lot, 2)))
+                    lock = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
+                    self.sl_level_per_lot = lock
+                    ctx.log("TSL ON step=1 | peak=" + str(round(self.peak_pnl_per_lot, 2))
+                            + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)) + " INR")
+
+                # TSL stepping
                 if self.tsl_active and self.peak_pnl_per_lot > self.tsl_activation:
-                    new_step = 1 + int((self.peak_pnl_per_lot - self.tsl_activation) / self.tsl_step_per_lot)
+                    new_step = 1 + int(
+                        (self.peak_pnl_per_lot - self.tsl_activation) / self.tsl_step_per_lot
+                    )
                     if new_step > self.tsl_step:
                         self.tsl_step = new_step
-                        self.sl_level_per_lot = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
-                        ctx.log("TSL step=" + str(self.tsl_step) + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)))
-                if pnl <= self.sl_level_per_lot:
-                    reason = "TSL" if self.tsl_active else "Initial SL"
-                    self.exit_held_option(ctx, direction + " " + reason)
-                    ctx.log(direction + " EXIT (" + reason + ") | P&L/lot=" + str(round(pnl, 2)) + " INR")
-                    if self.in_long:
-                        self.block_long = True
-                    else:
-                        self.block_short = True
-                    self.reset_position()
+                        lock = self.peak_pnl_per_lot * (self.tsl_lock_pct / 100.0)
+                        self.sl_level_per_lot = lock
+                        ctx.log("TSL step=" + str(self.tsl_step)
+                                + " | SL/lot=" + str(round(self.sl_level_per_lot, 2)) + " INR")
 
         # Time cutoff 3:10 PM
         if not before_cutoff:

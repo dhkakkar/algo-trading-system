@@ -293,6 +293,15 @@ class TradingContext:
             "get_option_price() must be implemented by the execution engine"
         )
 
+    def get_option_high(self, tradingsymbol: str) -> float | None:
+        """Return the current bar's high price of an option.
+
+        Useful for intra-bar stop-loss checks (worst case for option sellers).
+        Returns ``None`` if the data is not available.  Falls back to
+        :meth:`get_option_price` in engines that don't support bar OHLC.
+        """
+        return self.get_option_price(tradingsymbol)
+
     def get_bar_ist_time(self) -> tuple:
         """Return ``(hour, minute)`` of the current bar in IST.
 

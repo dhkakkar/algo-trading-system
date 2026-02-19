@@ -163,6 +163,22 @@ class BacktestContext(TradingContext):
             return float(bar["close"])
         return None
 
+    def get_option_high(self, tradingsymbol: str) -> float | None:
+        """Return the current bar's high price of an option.
+
+        Used for intra-bar stop-loss simulation.
+        """
+        oh = self._runner.options_handler
+        if not oh:
+            return None
+        ts = self._runner.data_handler.current_timestamp
+        if not ts:
+            return None
+        bar = oh.get_option_bar(tradingsymbol, ts)
+        if bar and "high" in bar:
+            return float(bar["high"])
+        return None
+
     def get_bar_ist_time(self) -> tuple:
         """Return ``(hour, minute)`` of the current bar in IST."""
         ts = self._runner.data_handler.current_timestamp
