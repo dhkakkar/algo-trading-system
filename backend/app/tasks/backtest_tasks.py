@@ -172,10 +172,11 @@ async def _run_backtest(backtest_id: str):
                     ]
                     options_handler.load_instruments(inst_dicts)
 
-                    # Fetch options OHLCV data
-                    kite_interval = {"1m": "minute", "3m": "3minute", "5m": "5minute",
-                                     "10m": "10minute", "15m": "15minute", "30m": "30minute",
-                                     "1h": "60minute", "1d": "day"}.get(backtest.timeframe, "5minute")
+                    # Fetch options OHLCV data — always use 5m for options
+                    # regardless of backtest timeframe (options data is typically
+                    # stored at 5m; get_option_bar() finds the nearest bar).
+                    options_db_interval = "5m"
+                    options_kite_interval = "5minute"
 
                     options_ohlcv: dict[str, pd.DataFrame] = {}
                     tokens_to_fetch: list[tuple[int, str, str]] = []
@@ -189,7 +190,7 @@ async def _run_backtest(backtest_id: str):
                             select(OHLCVData).where(
                                 and_(
                                     OHLCVData.instrument_token == inst.instrument_token,
-                                    OHLCVData.interval == interval,
+                                    OHLCVData.interval == options_db_interval,
                                     OHLCVData.time >= start_dt,
                                     OHLCVData.time <= end_dt,
                                 )
@@ -220,14 +221,14 @@ async def _run_backtest(backtest_id: str):
                             try:
                                 count = await fetch_and_store_from_kite(
                                     db, kite_client, token, tsymbol, exchange,
-                                    backtest.start_date, backtest.end_date, kite_interval,
+                                    backtest.start_date, backtest.end_date, options_kite_interval,
                                 )
                                 if count > 0:
                                     data_result = await db.execute(
                                         select(OHLCVData).where(
                                             and_(
                                                 OHLCVData.instrument_token == token,
-                                                OHLCVData.interval == interval,
+                                                OHLCVData.interval == options_db_interval,
                                                 OHLCVData.time >= start_dt,
                                                 OHLCVData.time <= end_dt,
                                             )
