@@ -396,6 +396,11 @@ class NiftyEMACPRStrategy(Strategy):
         if (self.in_long or self.in_short) and self.entry_premium is not None:
             pnl_per_lot = self.calc_pnl_per_lot(ctx)
 
+            # Emit P&L data for chart visualization
+            ctx.log("PNL_DATA|pnl=" + str(round(pnl_per_lot, 2))
+                    + "|sl=" + str(round(self.sl_level_per_lot, 2))
+                    + "|tp=" + str(self.tp_per_lot))
+
             # Level-cross exit (price crossed adverse EMA/CPR level)
             level_cross_exit = False
             if self.in_long:

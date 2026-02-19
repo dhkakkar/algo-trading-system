@@ -130,6 +130,7 @@ export default function PaperTradingDetailPage() {
   const [editTP, setEditTP] = useState("");
   const [slTpSaving, setSlTpSaving] = useState(false);
   const [closingPosition, setClosingPosition] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState<string | null>(null);
 
   // Broker status
   const [brokerStatus, setBrokerStatus] = useState<{
@@ -623,11 +624,24 @@ export default function PaperTradingDetailPage() {
                               )}
                             </div>
                             {isRunning && (
-                              <button onClick={() => handleClosePosition(pos.symbol)}
-                                disabled={closingPosition === pos.symbol}
-                                className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50">
-                                {closingPosition === pos.symbol ? "Closing..." : "Close"}
-                              </button>
+                              confirmClose === pos.symbol ? (
+                                <div className="flex items-center gap-1">
+                                  <button onClick={() => { setConfirmClose(null); handleClosePosition(pos.symbol); }}
+                                    disabled={closingPosition === pos.symbol}
+                                    className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/30 text-red-400 hover:bg-red-500/40 disabled:opacity-50">
+                                    {closingPosition === pos.symbol ? "Closing..." : "Confirm"}
+                                  </button>
+                                  <button onClick={() => setConfirmClose(null)}
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground">
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setConfirmClose(pos.symbol)}
+                                  className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30">
+                                  Close
+                                </button>
+                              )
                             )}
                           </div>
                         )}

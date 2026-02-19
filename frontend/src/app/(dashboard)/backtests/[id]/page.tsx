@@ -554,6 +554,9 @@ export default function BacktestDetailPage() {
   const [replayStartTime, setReplayStartTime] = useState("09:15");
   const candleSeriesRefBT = useRef<any>(null);
   const volumeSeriesRefBT = useRef<any>(null);
+  const pnlSeriesRefBT = useRef<any>(null);
+  const slSeriesRefBT = useRef<any>(null);
+  const tpSeriesRefBT = useRef<any>(null);
   const chartOHLCVRef = useRef<any[]>([]);
   const indicatorsRef = useRef<IndicatorConfig>(indicators);
 
@@ -925,6 +928,34 @@ export default function BacktestDetailPage() {
       applyIndicators(tradeChartObjRef.current, candleSeriesRefBT.current, candleData as CandleData[], sliceVolumes, indicatorsRef.current, indicatorSeriesRef);
       tradeChartObjRef.current.timeScale().scrollToRealTime();
     }
+
+    // Update P&L panel data up to current bar (replay mode)
+    if (pnlSeriesRefBT.current && logs.length > 0 && currentBarTime) {
+      const barMs = new Date(currentBarTime).getTime();
+      const rpnl: any[] = [];
+      const rsl: any[] = [];
+      const rtp: any[] = [];
+      logs.forEach((log) => {
+        if (!log.message?.startsWith("PNL_DATA|") || !log.timestamp) return;
+        const logMs = new Date(log.timestamp).getTime();
+        if (logMs > barMs) return;
+        const t = parseTime(log.timestamp);
+        const parts: Record<string, string> = {};
+        log.message.split("|").slice(1).forEach((p: string) => {
+          const [k, v] = p.split("=");
+          if (k && v) parts[k] = v;
+        });
+        const pnl = parseFloat(parts.pnl);
+        const sl = parseFloat(parts.sl);
+        const tp = parseFloat(parts.tp);
+        if (!isNaN(pnl)) rpnl.push({ time: t, value: pnl });
+        if (!isNaN(sl)) rsl.push({ time: t, value: sl });
+        if (!isNaN(tp)) rtp.push({ time: t, value: tp });
+      });
+      pnlSeriesRefBT.current.setData(rpnl);
+      if (slSeriesRefBT.current) slSeriesRefBT.current.setData(rsl);
+      if (tpSeriesRefBT.current) tpSeriesRefBT.current.setData(rtp);
+    }
   }, [bt, chartSymbol, trades, logs]);
 
   const openBTReplayPicker = useCallback(() => {
@@ -1181,6 +1212,68 @@ export default function BacktestDetailPage() {
       candleSeriesRefBT.current = candleSeries;
       volumeSeriesRefBT.current = volumeSeries;
 
+      // P&L panel with SL/TP lines (parsed from PNL_DATA logs)
+      if (logs.length > 0) {
+        const pnlData: any[] = [];
+        const slData: any[] = [];
+        const tpData: any[] = [];
+        logs.forEach((log) => {
+          if (!log.message?.startsWith("PNL_DATA|") || !log.timestamp) return;
+          const t = parseTime(log.timestamp);
+          const parts: Record<string, string> = {};
+          log.message.split("|").slice(1).forEach((p: string) => {
+            const [k, v] = p.split("=");
+            if (k && v) parts[k] = v;
+          });
+          const pnl = parseFloat(parts.pnl);
+          const sl = parseFloat(parts.sl);
+          const tp = parseFloat(parts.tp);
+          if (!isNaN(pnl)) pnlData.push({ time: t, value: pnl });
+          if (!isNaN(sl)) slData.push({ time: t, value: sl });
+          if (!isNaN(tp)) tpData.push({ time: t, value: tp });
+        });
+
+        if (pnlData.length > 0) {
+          const pnlS = chart.addLineSeries({
+            color: "#3b82f6", lineWidth: 2,
+            priceScaleId: "pnl", lastValueVisible: true,
+            priceLineVisible: false,
+            title: "P&L",
+          });
+          pnlS.setData(pnlData);
+          pnlSeriesRefBT.current = pnlS;
+
+          const slS = chart.addLineSeries({
+            color: "#ef4444", lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            priceScaleId: "pnl", lastValueVisible: false,
+            priceLineVisible: false,
+            title: "SL",
+          });
+          slS.setData(slData);
+          slSeriesRefBT.current = slS;
+
+          const tpS = chart.addLineSeries({
+            color: "#22c55e", lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            priceScaleId: "pnl", lastValueVisible: false,
+            priceLineVisible: false,
+            title: "TP",
+          });
+          tpS.setData(tpData);
+          tpSeriesRefBT.current = tpS;
+
+          chart.priceScale("pnl").applyOptions({
+            scaleMargins: { top: 0.7, bottom: 0.02 },
+          });
+
+          // Adjust volume to share bottom space
+          chart.priceScale("volume").applyOptions({
+            scaleMargins: { top: 0.92, bottom: 0 },
+          });
+        }
+      }
+
       // Trade entry/exit markers + connecting lines
       const rawInst = chartSymbol || bt.instruments?.[0] || "";
       const parsed = parseInstrument(rawInst);
@@ -1415,6 +1508,9 @@ export default function BacktestDetailPage() {
         tradeChartObjRef.current = null;
         candleSeriesRefBT.current = null;
         volumeSeriesRefBT.current = null;
+        pnlSeriesRefBT.current = null;
+        slSeriesRefBT.current = null;
+        tpSeriesRefBT.current = null;
       };
     });
 

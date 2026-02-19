@@ -197,6 +197,7 @@ function calcCPR(candles: CandleData[]): CPRResult | null {
     const prev = dayGroups[i - 1];
     const { high: pH, low: pL, close: pC } = prev;
     const pivot = (pH + pL + pC) / 3;
+    if (!isFinite(pivot)) continue; // skip corrupt day data
     const bc = (pH + pL) / 2;
     const tc = 2 * pivot - bc;
     const r1 = 2 * pivot - pL;
@@ -337,7 +338,13 @@ function getOrCreateLine(
   opts: Record<string, any>,
 ): any {
   if (seriesRef.current[key]) return seriesRef.current[key];
-  const series = chart.addLineSeries({ priceLineVisible: false, lastValueVisible: false, ...opts });
+  const series = chart.addLineSeries({
+    priceLineVisible: false,
+    lastValueVisible: false,
+    // Exclude overlay indicators from autoscale so they don't distort the candle price scale
+    autoscaleInfoProvider: () => null,
+    ...opts,
+  });
   seriesRef.current[key] = series;
   return series;
 }
@@ -363,7 +370,7 @@ export function applyIndicators(
   const closes = candles.map((c) => c.close);
   const times = candles.map((c) => c.time);
   const toTimeSeries = (vals: (number | null)[]) =>
-    vals.map((v, i) => (v != null ? { time: times[i] as any, value: v } : null)).filter(Boolean);
+    vals.map((v, i) => (v != null && isFinite(v) ? { time: times[i] as any, value: v } : null)).filter(Boolean);
 
   // --- EMA Fast ---
   if (config.emaFast.enabled) {

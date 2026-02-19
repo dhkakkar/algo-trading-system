@@ -484,6 +484,11 @@ class NiftyEMACPRStrategy(Strategy):
             pnl = self.calc_pnl_per_lot(ctx)
             direction = "LONG" if self.in_long else "SHORT"
 
+            # Emit P&L data for chart visualization
+            ctx.log("PNL_DATA|pnl=" + str(round(pnl, 2))
+                    + "|sl=" + str(round(self.sl_level_per_lot, 2))
+                    + "|tp=" + str(self.tp_per_lot))
+
             # Level-cross exit
             level_cross_exit = False
             if self.in_long:
