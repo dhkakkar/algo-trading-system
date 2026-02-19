@@ -557,12 +557,22 @@ export default function BacktestDetailPage() {
   const pnlSeriesRefBT = useRef<any>(null);
   const slSeriesRefBT = useRef<any>(null);
   const tpSeriesRefBT = useRef<any>(null);
+  const [showSL, setShowSL] = useState(true);
+  const [showTP, setShowTP] = useState(true);
   const chartOHLCVRef = useRef<any[]>([]);
   const indicatorsRef = useRef<IndicatorConfig>(indicators);
 
   // Keep refs in sync
   useEffect(() => { chartOHLCVRef.current = chartOHLCV; }, [chartOHLCV]);
   useEffect(() => { indicatorsRef.current = indicators; }, [indicators]);
+
+  // Toggle SL/TP series visibility
+  useEffect(() => {
+    if (slSeriesRefBT.current) slSeriesRefBT.current.applyOptions({ visible: showSL });
+  }, [showSL]);
+  useEffect(() => {
+    if (tpSeriesRefBT.current) tpSeriesRefBT.current.applyOptions({ visible: showTP });
+  }, [showTP]);
 
   // Persist grid preference and apply to all charts
   useEffect(() => {
@@ -2268,6 +2278,16 @@ export default function BacktestDetailPage() {
                           </span>
                         </>
                       )}
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="checkbox" checked={showSL} onChange={(e) => setShowSL(e.target.checked)} className="accent-red-500 w-3 h-3" />
+                        <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: "#ef4444" }} />
+                        SL
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="checkbox" checked={showTP} onChange={(e) => setShowTP(e.target.checked)} className="accent-green-500 w-3 h-3" />
+                        <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: "#22c55e" }} />
+                        TP
+                      </label>
                     </>
                   )}
                   {replayMode && (
