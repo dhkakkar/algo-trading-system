@@ -754,7 +754,18 @@ class BacktestRunner(BaseRunner):
                     await result
 
         # ----------------------------------------------------------
-        # 6. Close all open positions at the end
+        # 6. Process any remaining pending orders before force-close
+        # ----------------------------------------------------------
+        if self._pending_orders:
+            self._add_log(
+                "INFO",
+                f"Processing {len(self._pending_orders)} pending order(s) before force-close",
+                "runner",
+            )
+            self._process_pending_orders(total_bars - 1)
+
+        # ----------------------------------------------------------
+        # 7. Close all open positions at the end
         # ----------------------------------------------------------
         final_prices = self._get_all_current_prices()
         final_ts = self.data_handler.current_timestamp or datetime.now(timezone.utc)
@@ -772,7 +783,7 @@ class BacktestRunner(BaseRunner):
         self.portfolio.record_equity(final_ts, final_prices)
 
         # ----------------------------------------------------------
-        # 7. Call strategy.on_stop()
+        # 8. Call strategy.on_stop()
         # ----------------------------------------------------------
         try:
             strategy_instance.on_stop(self._context)
@@ -781,7 +792,7 @@ class BacktestRunner(BaseRunner):
             self._add_log("ERROR", f"on_stop raised: {type(exc).__name__}: {exc}", "strategy")
 
         # ----------------------------------------------------------
-        # 8. Calculate metrics
+        # 9. Calculate metrics
         # ----------------------------------------------------------
         start_date = self._config.get("start_date", datetime.now(timezone.utc))
         end_date = self._config.get("end_date", datetime.now(timezone.utc))
